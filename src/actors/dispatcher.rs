@@ -1,4 +1,3 @@
-extern crate threadpool;
 use std::thread;
 use std::cmp::min;
 use threadpool::ThreadPool;
