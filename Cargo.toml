@@ -8,3 +8,4 @@ rustc-serialize = "*"
 threadpool = "1.0"
 futures = "0.1"
 futures-cpupool = "0.1.2"
+cpython = { git = "https://github.com/dgrunwald/rust-cpython.git" }
