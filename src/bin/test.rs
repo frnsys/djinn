@@ -4,10 +4,13 @@ extern crate djinn;
 extern crate futures;
 extern crate futures_cpupool;
 extern crate rustc_serialize;
+extern crate cpython;
 use std::sync::{Arc, RwLock};
 use futures::{BoxFuture, Future, collect, finished};
 use futures_cpupool::CpuPool;
 use djinn::actors::{Actor, Inbox, dispatcher};
+use cpython::Python;
+use cpython::ObjectProtocol;
 
 #[derive(RustcDecodable, RustcEncodable, PartialEq, Debug)]
 pub enum ExampleReturn {
@@ -56,6 +59,21 @@ impl Actor for ExampleActor {
 }
 
 fn main() {
+    // First test Python bindings
+    let gil = Python::acquire_gil();
+    let py = gil.python();
+
+    let sys = py.import("sys").unwrap();
+    let version: String = sys.get(py, "version").unwrap().extract(py).unwrap();
+
+    let os = py.import("os").unwrap();
+    let getenv = os.get(py, "getenv").unwrap();
+    let user: String = getenv.call(py, ("USER",), None).unwrap().extract(py).unwrap();
+
+    println!("Hello {}, I'm Python {}", user, version);
+
+    // Secondly, test actors
+
     let n_workers = 10;
     let pool = CpuPool::new(n_workers);
     let actors = Arc::new(RwLock::new(Vec::new()));
