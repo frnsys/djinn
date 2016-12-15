@@ -6,6 +6,12 @@ authors = ["Francis Tseng <f@frnsys.com>"]
 [dependencies]
 rustc-serialize = "*"
 threadpool = "1.0"
-futures = "0.1"
+futures = "*"
 futures-cpupool = "0.1.2"
+tokio-core = "*"
+tokio-uds = "*"
+rmp = "0.7.5"
+rmp-serialize = "*"
+tokio-service = { git = "https://github.com/tokio-rs/tokio-service" }
+tokio-proto = { git = "https://github.com/tokio-rs/tokio-proto" }
 cpython = { git = "https://github.com/dgrunwald/rust-cpython.git" }
