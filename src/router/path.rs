@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use rustc_serialize::{json, Decodable, Encodable, Decoder, Encoder};
+use rustc_serialize::{Decodable, Encodable, Decoder, Encoder};
 
 #[derive(Debug, Copy, Clone)]
 pub struct RemoteAddr(pub SocketAddr);
@@ -21,8 +21,7 @@ impl Encodable for RemoteAddr {
     }
 }
 
-// TODO eventually use this to locate actors locally or across a network
-#[derive(RustcDecodable, RustcEncodable, Debug)]
+#[derive(RustcDecodable, RustcEncodable, Debug, Copy, Clone)]
 pub enum ActorPath {
     Local { id: usize },
     Remote { addr: RemoteAddr, id: usize },
