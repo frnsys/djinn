@@ -2,36 +2,35 @@ mod path;
 mod msgpack;
 mod protocol;
 
-use std::sync::{Arc, RwLock};
 use std::net;
 use std::io::Error;
-use tokio_core::reactor::Core;
-use tokio_core::net::TcpStream;
-use tokio_service::Service;
-use tokio_core::net::TcpListener;
-use tokio_proto::{TcpClient, pipeline};
-use futures::Future;
-use tokio_core::io::Io;
-use futures::stream::Stream;
-use futures::sink::Sink;
-use self::protocol::{MsgPackProtocol, MsgPackCodec, SerDeser};
-use self::path::ActorPath;
-use super::actors::Inbox;
+use std::sync::{Arc, RwLock};
 use std::collections::HashMap;
+use tokio_core::io::Io;
+use tokio_core::reactor::Core;
+use tokio_proto::{TcpClient, pipeline};
+use tokio_core::net::{TcpStream, TcpListener};
+use tokio_service::Service;
+use futures::Future;
+use futures::sink::Sink;
+use futures::stream::Stream;
+use super::actors::Inbox;
+pub use self::path::ActorPath;
+pub use self::protocol::{MsgPackProtocol, MsgPackCodec, SerDeser};
 
 #[derive(RustcDecodable, RustcEncodable, Debug)]
-enum RoutingMessage<T: SerDeser> {
+pub enum RoutingMessage<T: SerDeser> {
     Ok,
     Message {
         sender: ActorPath,
-        recipient: ActorPath,
+        recipient: usize,
         message: T,
     },
 }
 
-struct Router<T: SerDeser + 'static> {
+pub struct Router<T: SerDeser + 'static> {
     core: Core,
-    inbox: Inbox<RoutingMessage<T>>,
+    pub inbox: Inbox<RoutingMessage<T>>,
     clients: HashMap<net::SocketAddr,
                      pipeline::ClientService<TcpStream,
                                              MsgPackProtocol<RoutingMessage<T>,
@@ -97,18 +96,23 @@ impl<T> Router<T>
                     sender: ActorPath,
                     recipient: ActorPath)
                     -> Result<RoutingMessage<T>, String> {
-        let msg = RoutingMessage::Message {
-            sender: sender,
-            recipient: recipient.clone(),
-            message: message,
-        };
         match recipient {
             ActorPath::Local { id } => {
+                let msg = RoutingMessage::Message {
+                    sender: sender,
+                    recipient: id,
+                    message: message,
+                };
                 let mut inbox = self.inbox.write().unwrap();
                 inbox.push(msg);
                 Ok(RoutingMessage::Ok)
             }
             ActorPath::Remote { addr, id } => {
+                let msg = RoutingMessage::Message {
+                    sender: sender,
+                    recipient: id,
+                    message: message,
+                };
                 let addr = addr.0;
                 match self.clients.get(&addr) {
                     Some(client) => {

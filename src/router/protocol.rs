@@ -1,14 +1,11 @@
-use rustc_serialize;
+use rustc_serialize::{Decodable, Encodable};
 use std::{io, marker};
 use tokio_core::io::{Io, Codec, Framed, EasyBuf};
 use tokio_proto::pipeline::{ServerProto, ClientProto};
 use super::msgpack;
 
-pub trait SerDeser
-    : rustc_serialize::Decodable + rustc_serialize::Encodable + ::std::fmt::Debug + Send + Sync
-    {
-}
-impl<T> SerDeser for T where T : rustc_serialize::Decodable + rustc_serialize::Encodable + ::std::fmt::Debug + Send + Sync {}
+pub trait SerDeser: Decodable + Encodable + ::std::fmt::Debug + Send + Sync {}
+impl<T> SerDeser for T where T: Decodable + Encodable + ::std::fmt::Debug + Send + Sync {}
 
 pub struct MsgPackProtocol<Req, Res>
     where Req: SerDeser,
