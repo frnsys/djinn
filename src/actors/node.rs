@@ -6,6 +6,6 @@ pub fn start_node<A>(addr: String, population: ActorVecRef<A>, n_threads: usize)
     where A: Actor + 'static
 {
     // TODO register with leader node
-    let router = Router::<A>::new(population.clone());
+    let router = Router::<A>::new(addr, population.clone());
     dispatcher(population, n_threads);
 }

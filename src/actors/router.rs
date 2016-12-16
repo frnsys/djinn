@@ -11,14 +11,19 @@ use futures::Future;
 use futures::sink::Sink;
 use futures::stream::Stream;
 use super::actor::{Actor, ActorRef, ActorVecRef};
-use super::path::ActorPath;
+use super::path::{ActorPath, RemoteAddr};
 use super::message::Message;
 use super::protocol::{MsgPackProtocol, MsgPackCodec};
 
 #[derive(RustcDecodable, RustcEncodable, Debug)]
 pub enum RoutingMessage<T: Message> {
     Ok,
-    Message {
+    Tell {
+        sender: ActorPath,
+        recipient: usize,
+        message: T,
+    },
+    Ask {
         sender: ActorPath,
         recipient: usize,
         message: T,
@@ -26,13 +31,14 @@ pub enum RoutingMessage<T: Message> {
 }
 
 pub struct Router<A: Actor + 'static> {
+    addr: String,
     actors: Arc<Mutex<HashMap<usize, ActorRef<A>>>>,
 }
 
 impl<A> Router<A>
     where A: Actor + 'static
 {
-    pub fn new(actors: ActorVecRef<A>) -> Router<A> {
+    pub fn new(addr: String, actors: ActorVecRef<A>) -> Router<A> {
         let mut lookup = HashMap::<usize, ActorRef<A>>::new();
         {
             let actors = actors.clone();
@@ -42,10 +48,14 @@ impl<A> Router<A>
                 lookup.insert(actor_r.id(), actor.clone());
             }
         }
-        Router { actors: Arc::new(Mutex::new(lookup)) }
+        Router {
+            addr: addr,
+            actors: Arc::new(Mutex::new(lookup)),
+        }
     }
 
-    pub fn serve(&self, addr: String) {
+    pub fn serve(&self) {
+        let addr = self.addr.clone();
         let actors = self.actors.clone();
         thread::spawn(move || {
             let mut core = Core::new().unwrap();
@@ -67,13 +77,34 @@ impl<A> Router<A>
                             let req: RoutingMessage<A::M> = req;
                             println!("{:?}", req);
                             let res: Result<RoutingMessage<A::M>, Error> = match req {
-                                RoutingMessage::Message { sender, recipient, message } => {
+                                RoutingMessage::Tell { sender, recipient, message } => {
                                     match actors.lock().unwrap().get(&recipient) {
                                         Some(actor) => {
                                             let actor_r = actor.read().unwrap();
                                             let mut inbox = actor_r.inbox().write().unwrap();
                                             inbox.push(message);
                                             Ok(RoutingMessage::Ok)
+                                        }
+                                        None => Ok(RoutingMessage::Ok),
+                                    }
+                                }
+                                RoutingMessage::Ask { sender, recipient, message } => {
+                                    match actors.lock().unwrap().get(&recipient) {
+                                        Some(actor) => {
+                                            let actor_r = actor.read().unwrap();
+                                            let resp = actor_r.handle_msg(message);
+                                            let id = match sender {
+                                                ActorPath::Local { id } => id,
+                                                ActorPath::Remote { addr, id } => id,
+                                            };
+                                            Ok(RoutingMessage::Tell {
+                                                recipient: id,
+                                                sender: ActorPath::Remote {
+                                                    addr: RemoteAddr(addr),
+                                                    id: recipient,
+                                                },
+                                                message: resp,
+                                            })
                                         }
                                         None => Ok(RoutingMessage::Ok),
                                     }
@@ -108,7 +139,7 @@ impl<A> Router<A>
                 Ok(RoutingMessage::Ok)
             }
             ActorPath::Remote { addr, id } => {
-                let msg = RoutingMessage::Message {
+                let msg = RoutingMessage::Tell {
                     sender: sender,
                     recipient: id,
                     message: message,
