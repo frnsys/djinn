@@ -52,7 +52,7 @@ impl Actor for ExampleActor {
 
 
 #[test]
-fn router() {
+fn tell() {
     let addr = "127.0.0.1:8080".to_string();
     let actors = Arc::new(RwLock::new(Vec::new()));
     let actor = box ExampleActor::new(0);
@@ -64,12 +64,12 @@ fn router() {
     router.serve();
     let sender = ActorPath::Local { id: 1 };
     let recipient = ActorPath::Local { id: 0 };
-    let resp = router.send_msg(ExampleMessage::Bar { z: 10 }, sender, recipient);
+    let resp = router.tell(ExampleMessage::Bar { z: 10 }, sender, recipient);
     assert_eq!(resp, RoutingMessage::Ok);
 }
 
 #[test]
-fn router_nonexistent_actor() {
+fn tell_nonexistent_actor() {
     let addr = "127.0.0.1:8080".to_string();
     let actors = Arc::new(RwLock::new(Vec::new()));
     let actor = box ExampleActor::new(0);
@@ -81,6 +81,28 @@ fn router_nonexistent_actor() {
     router.serve();
     let sender = ActorPath::Local { id: 1 };
     let recipient = ActorPath::Local { id: 2 }; // no actor with this id
-    let resp = router.send_msg(ExampleMessage::Bar { z: 10 }, sender, recipient);
+    let resp = router.tell(ExampleMessage::Bar { z: 10 }, sender, recipient);
     assert_eq!(resp, RoutingMessage::Err("No actor with id".to_string()));
+}
+
+#[test]
+fn ask() {
+    let addr = "127.0.0.1:8080".to_string();
+    let actors = Arc::new(RwLock::new(Vec::new()));
+    let actor = box ExampleActor::new(0);
+    {
+        let mut actors_ = actors.write().unwrap();
+        actors_.push(Arc::new(RwLock::new(actor)));
+    }
+    let router = Router::new(addr, actors);
+    router.serve();
+    let sender = ActorPath::Local { id: 1 };
+    let recipient = ActorPath::Local { id: 0 };
+    let resp = router.ask(ExampleMessage::Bar { z: 10 }, sender, recipient);
+    assert_eq!(resp,
+               RoutingMessage::Response {
+                   sender: recipient,
+                   recipient: 1,
+                   message: ExampleMessage::Bar { z: 20 },
+               });
 }

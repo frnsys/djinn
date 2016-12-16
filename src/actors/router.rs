@@ -29,6 +29,11 @@ pub enum RoutingMessage<T: Message> {
         recipient: usize,
         message: T,
     },
+    Response {
+        sender: ActorPath,
+        recipient: usize,
+        message: T,
+    },
 }
 
 pub struct Router<A: Actor + 'static> {
@@ -101,7 +106,7 @@ impl<A> Router<A>
                                                 ActorPath::Local { id } => id,
                                                 ActorPath::Remote { addr, id } => id,
                                             };
-                                            Ok(RoutingMessage::Tell {
+                                            Ok(RoutingMessage::Response {
                                                 recipient: id,
                                                 sender: ActorPath::Remote {
                                                     addr: RemoteAddr(addr),
@@ -115,6 +120,7 @@ impl<A> Router<A>
                                 }
                                 RoutingMessage::Ok => Ok(RoutingMessage::Ok),
                                 RoutingMessage::Err(_) => Ok(RoutingMessage::Ok),
+                                _ => Ok(RoutingMessage::Ok),
                             };
                             res
                         }))
@@ -126,11 +132,26 @@ impl<A> Router<A>
         });
     }
 
-    pub fn send_msg(&self,
-                    message: A::M,
-                    sender: ActorPath,
-                    recipient: ActorPath)
-                    -> RoutingMessage<A::M> {
+    fn send_msg(&self, addr: RemoteAddr, message: RoutingMessage<A::M>) -> RoutingMessage<A::M> {
+        let mut core = Core::new().unwrap();
+        let handle = core.handle();
+        let addr = addr.0;
+        println!("connecting to {}", addr);
+        let proto: MsgPackProtocol<RoutingMessage<A::M>, RoutingMessage<A::M>> =
+            MsgPackProtocol::new();
+        let client = TcpClient::new(proto).connect(&addr, &handle);
+        let res = core.run(client.and_then(|client| client.call(message)));
+        match res {
+            Ok(resp) => resp,
+            Err(_) => RoutingMessage::Err("Error sending message".to_string()),
+        }
+    }
+
+    pub fn tell(&self,
+                message: A::M,
+                sender: ActorPath,
+                recipient: ActorPath)
+                -> RoutingMessage<A::M> {
         match recipient {
             ActorPath::Local { id } => {
                 match self.actors.lock().unwrap().get(&id) {
@@ -150,18 +171,43 @@ impl<A> Router<A>
                     recipient: id,
                     message: message,
                 };
-                let mut core = Core::new().unwrap();
-                let handle = core.handle();
-                let addr = addr.0;
-                println!("connecting to {}", addr);
-                let proto: MsgPackProtocol<RoutingMessage<A::M>, RoutingMessage<A::M>> =
-                    MsgPackProtocol::new();
-                let client = TcpClient::new(proto).connect(&addr, &handle);
-                let res = core.run(client.and_then(|client| client.call(msg)));
-                match res {
-                    Ok(resp) => resp,
-                    Err(_) => RoutingMessage::Err("Error sending message".to_string()),
+                self.send_msg(addr, msg)
+            }
+        }
+    }
+
+    pub fn ask(&self,
+               message: A::M,
+               sender: ActorPath,
+               recipient: ActorPath)
+               -> RoutingMessage<A::M> {
+        match recipient {
+            ActorPath::Local { id } => {
+                match self.actors.lock().unwrap().get(&id) {
+                    Some(actor) => {
+                        let actor_r = actor.read().unwrap();
+                        let resp = actor_r.handle_msg(message);
+                        let sender_id = match sender {
+                            ActorPath::Local { id } => id,
+                            ActorPath::Remote { addr, id } => id,
+                        };
+                        RoutingMessage::Response {
+                            recipient: sender_id,
+                            sender: ActorPath::Local { id: id },
+                            message: resp,
+                        }
+                    }
+                    None => RoutingMessage::Err("No actor with id".to_string()),
                 }
+            }
+            ActorPath::Remote { addr, id } => {
+                // TODO this should not just be tell, should have the option of ask
+                let msg = RoutingMessage::Ask {
+                    sender: sender,
+                    recipient: id,
+                    message: message,
+                };
+                self.send_msg(addr, msg)
             }
         }
     }
