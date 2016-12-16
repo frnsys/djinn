@@ -2,6 +2,8 @@
 
 extern crate djinn;
 extern crate rustc_serialize;
+use std::thread;
+use std::time::Duration;
 use std::sync::{Arc, RwLock};
 use djinn::actors::{Actor, Inbox};
 use djinn::actors::router::{Router, RoutingMessage};
@@ -120,26 +122,26 @@ fn tell_remote() {
     let router = Router::new(addr1.clone(), actors);
     router.serve();
 
+    // wait for server to come up. TODO better way of handling this?
+    thread::sleep(Duration::from_millis(1000));
+
+    let actors2 = Arc::new(RwLock::new(Vec::new()));
+    let actor2 = box ExampleActor::new(0);
     {
-        let actors = Arc::new(RwLock::new(Vec::new()));
-        let actor = box ExampleActor::new(0);
-        {
-            let mut actors_ = actors.write().unwrap();
-            actors_.push(Arc::new(RwLock::new(actor)));
-        }
-        let router = Router::new(addr2.clone(), actors);
-        router.serve();
+        let mut actors_ = actors2.write().unwrap();
+        actors_.push(Arc::new(RwLock::new(actor2)));
     }
+    let router2 = Router::new(addr2.clone(), actors2);
 
     let sender = ActorPath::Remote {
-        addr: RemoteAddr(addr1.parse().unwrap()),
-        id: 0,
-    };
-    let recipient = ActorPath::Remote {
         addr: RemoteAddr(addr2.parse().unwrap()),
         id: 0,
     };
-    let resp = router.tell(ExampleMessage::Bar { z: 10 }, sender, recipient);
+    let recipient = ActorPath::Remote {
+        addr: RemoteAddr(addr1.parse().unwrap()),
+        id: 0,
+    };
+    let resp = router2.tell(ExampleMessage::Bar { z: 10 }, sender, recipient);
     assert_eq!(resp, RoutingMessage::Ok);
 }
 
@@ -156,26 +158,26 @@ fn ask_remote() {
     let router = Router::new(addr1.clone(), actors);
     router.serve();
 
+    // wait for server to come up. TODO better way of handling this?
+    thread::sleep(Duration::from_millis(1000));
+
+    let actors2 = Arc::new(RwLock::new(Vec::new()));
+    let actor2 = box ExampleActor::new(0);
     {
-        let actors = Arc::new(RwLock::new(Vec::new()));
-        let actor = box ExampleActor::new(0);
-        {
-            let mut actors_ = actors.write().unwrap();
-            actors_.push(Arc::new(RwLock::new(actor)));
-        }
-        let router = Router::new(addr2.clone(), actors);
-        router.serve();
+        let mut actors_ = actors2.write().unwrap();
+        actors_.push(Arc::new(RwLock::new(actor2)));
     }
+    let router2 = Router::new(addr2.clone(), actors2);
 
     let sender = ActorPath::Remote {
-        addr: RemoteAddr(addr1.parse().unwrap()),
-        id: 0,
-    };
-    let recipient = ActorPath::Remote {
         addr: RemoteAddr(addr2.parse().unwrap()),
         id: 0,
     };
-    let resp = router.ask(ExampleMessage::Bar { z: 10 }, sender, recipient);
+    let recipient = ActorPath::Remote {
+        addr: RemoteAddr(addr1.parse().unwrap()),
+        id: 0,
+    };
+    let resp = router2.ask(ExampleMessage::Bar { z: 10 }, sender, recipient);
     assert_eq!(resp,
                RoutingMessage::Response {
                    sender: recipient,

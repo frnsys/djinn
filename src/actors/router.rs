@@ -60,7 +60,7 @@ impl<A> Router<A>
         }
     }
 
-    pub fn serve(&self) {
+    pub fn serve(&self) -> thread::JoinHandle<()> {
         let addr = self.addr.clone();
         let actors = self.actors.clone();
         thread::spawn(move || {
@@ -71,8 +71,8 @@ impl<A> Router<A>
             println!("Listening on: {}", addr);
 
             let done = tcp_socket.incoming()
-                .for_each(move |(socket, addr)| {
-                    println!("Received connection from: {}", addr);
+                .for_each(move |(socket, client_addr)| {
+                    println!("Received connection from: {}", client_addr);
 
                     let actors = actors.clone();
                     let (sink, stream) =
@@ -132,7 +132,7 @@ impl<A> Router<A>
                     Ok(())
                 });
             let _ = core.run(done);
-        });
+        })
     }
 
     fn send_msg(&self, addr: RemoteAddr, message: RoutingMessage<A::M>) -> RoutingMessage<A::M> {
