@@ -42,10 +42,10 @@ pub fn dispatcher<A>(actors: ActorVecRef<A>, n_threads: usize)
                                 let mut inbox = actor_r.inbox().write().unwrap();
                                 inbox.push(message);
                             }
-                            _ => println!("foo"),
+                            _ => (),
                         }
                     }
-                    _ => println!("foo"),
+                    _ => (),
                 }
             }
             let actors = actors.clone();
