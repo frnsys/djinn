@@ -9,13 +9,7 @@ use futures::{BoxFuture, Future, collect, finished};
 use futures_cpupool::CpuPool;
 use djinn::actors::{Actor, Inbox, dispatcher};
 
-#[derive(RustcDecodable, RustcEncodable, PartialEq, Debug)]
-pub enum ExampleReturn {
-    Foo(u8),
-    Bar(u8),
-}
-
-#[derive(RustcDecodable, RustcEncodable)]
+#[derive(RustcDecodable, RustcEncodable, Debug, PartialEq)]
 pub enum ExampleMessage {
     Foo { x: u8, y: u8 },
     Bar { z: u8 },
@@ -23,13 +17,13 @@ pub enum ExampleMessage {
 
 struct ExampleActor {
     id: usize,
-    inbox: Inbox<ExampleMessage>
+    inbox: Inbox<ExampleMessage>,
 }
 impl ExampleActor {
     pub fn new(id: usize) -> ExampleActor {
         ExampleActor {
             id: id,
-            inbox: Arc::new(RwLock::new(Vec::new()))
+            inbox: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -42,16 +36,24 @@ impl ExampleActor {
 
 impl Actor for ExampleActor {
     type M = ExampleMessage;
-    type R = ExampleReturn;
-    fn handle_msg(&self, message: Self::M) -> Self::R {
+    fn handle_msg(&self, message: Self::M) -> Self::M {
         match message {
-            ExampleMessage::Foo { x, y } => ExampleReturn::Foo(x+y),
-            ExampleMessage::Bar { z } => ExampleReturn::Bar(10+z),
+            ExampleMessage::Foo { x, y } => {
+                ExampleMessage::Foo {
+                    x: x * 2,
+                    y: y + 1,
+                }
+            }
+            ExampleMessage::Bar { z } => ExampleMessage::Bar { z: z + 10 },
         }
     }
 
     fn inbox(&self) -> &Inbox<Self::M> {
         &self.inbox
+    }
+
+    fn id(&self) -> usize {
+        self.id
     }
 }
 

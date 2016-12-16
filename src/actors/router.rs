@@ -15,9 +15,10 @@ use super::path::{ActorPath, RemoteAddr};
 use super::message::Message;
 use super::protocol::{MsgPackProtocol, MsgPackCodec};
 
-#[derive(RustcDecodable, RustcEncodable, Debug)]
+#[derive(RustcDecodable, RustcEncodable, Debug, PartialEq)]
 pub enum RoutingMessage<T: Message> {
     Ok,
+    Err(String),
     Tell {
         sender: ActorPath,
         recipient: usize,
@@ -85,7 +86,10 @@ impl<A> Router<A>
                                             inbox.push(message);
                                             Ok(RoutingMessage::Ok)
                                         }
-                                        None => Ok(RoutingMessage::Ok),
+                                        None => {
+                                            Ok(RoutingMessage::Err(format!("No actor with id {}",
+                                                                           recipient)))
+                                        }
                                     }
                                 }
                                 RoutingMessage::Ask { sender, recipient, message } => {
@@ -110,6 +114,7 @@ impl<A> Router<A>
                                     }
                                 }
                                 RoutingMessage::Ok => Ok(RoutingMessage::Ok),
+                                RoutingMessage::Err(_) => Ok(RoutingMessage::Ok),
                             };
                             res
                         }))
@@ -121,11 +126,11 @@ impl<A> Router<A>
         });
     }
 
-    pub fn send_msg(&mut self,
+    pub fn send_msg(&self,
                     message: A::M,
                     sender: ActorPath,
                     recipient: ActorPath)
-                    -> Result<RoutingMessage<A::M>, String> {
+                    -> RoutingMessage<A::M> {
         match recipient {
             ActorPath::Local { id } => {
                 match self.actors.lock().unwrap().get(&id) {
@@ -133,12 +138,13 @@ impl<A> Router<A>
                         let actor_r = actor.read().unwrap();
                         let mut inbox = actor_r.inbox().write().unwrap();
                         inbox.push(message);
+                        RoutingMessage::Ok
                     }
-                    None => (),
+                    None => RoutingMessage::Err("No actor with id".to_string()),
                 }
-                Ok(RoutingMessage::Ok)
             }
             ActorPath::Remote { addr, id } => {
+                // TODO this should not just be tell, should have the option of ask
                 let msg = RoutingMessage::Tell {
                     sender: sender,
                     recipient: id,
@@ -151,13 +157,11 @@ impl<A> Router<A>
                 let proto: MsgPackProtocol<RoutingMessage<A::M>, RoutingMessage<A::M>> =
                     MsgPackProtocol::new();
                 let client = TcpClient::new(proto).connect(&addr, &handle);
-                core.run(client.then(|result| {
-                        match result {
-                            Ok(c) => Ok(c.call(msg)),
-                            Err(e) => Err(e),
-                        }
-                    })
-                    .then(|_| Ok(RoutingMessage::Ok))) // TODO should return response
+                let res = core.run(client.and_then(|client| client.call(msg)));
+                match res {
+                    Ok(resp) => resp,
+                    Err(_) => RoutingMessage::Err("Error sending message".to_string()),
+                }
             }
         }
     }

@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use rustc_serialize::{Decodable, Encodable, Decoder, Encoder};
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct RemoteAddr(pub SocketAddr);
 
 impl Decodable for RemoteAddr {
@@ -20,7 +20,7 @@ impl Encodable for RemoteAddr {
     }
 }
 
-#[derive(RustcDecodable, RustcEncodable, Debug, Copy, Clone)]
+#[derive(RustcDecodable, RustcEncodable, Debug, Copy, Clone, PartialEq)]
 pub enum ActorPath {
     Local { id: usize },
     Remote { addr: RemoteAddr, id: usize },

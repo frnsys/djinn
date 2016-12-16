@@ -1,8 +1,8 @@
-mod router;
 mod protocol;
 pub mod node;
 pub mod path;
 pub mod actor;
+pub mod router;
 pub mod message;
 pub mod dispatch;
 pub use self::actor::{Actor, Inbox};
