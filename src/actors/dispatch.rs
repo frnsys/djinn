@@ -3,7 +3,6 @@ use std::cmp::min;
 use threadpool::ThreadPool;
 use std::collections::HashMap;
 use super::actor::{Actor, ActorRef, ActorVecRef};
-use super::router::{Router, RoutingMessage};
 
 // Max amount of messages to process per actor
 // during an activation
@@ -17,7 +16,6 @@ pub fn dispatcher<A>(actors: ActorVecRef<A>, n_threads: usize)
     thread::spawn(move || {
         // TODO should this just be another futures cpupool?
         let pool = ThreadPool::new(n_threads);
-        let router = Router::<A::M>::new();
 
         // lookup actors by id
         let mut lookup = HashMap::<usize, ActorRef<A>>::new();
@@ -31,23 +29,6 @@ pub fn dispatcher<A>(actors: ActorVecRef<A>, n_threads: usize)
         }
 
         loop {
-            // give the actors the messages from the router
-            let mut messages = router.inbox.write().unwrap();
-            for msg in messages.drain(..) {
-                match msg {
-                    RoutingMessage::Message { sender, recipient, message } => {
-                        match lookup.get(&recipient) {
-                            Some(actor) => {
-                                let actor_r = actor.read().unwrap();
-                                let mut inbox = actor_r.inbox().write().unwrap();
-                                inbox.push(message);
-                            }
-                            _ => (),
-                        }
-                    }
-                    _ => (),
-                }
-            }
             let actors = actors.clone();
             let actors = actors.read().unwrap();
             for actor in actors.iter() {
