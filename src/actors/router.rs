@@ -115,7 +115,10 @@ impl<A> Router<A>
                                                 message: resp,
                                             })
                                         }
-                                        None => Ok(RoutingMessage::Ok),
+                                        None => {
+                                            Ok(RoutingMessage::Err(format!("No actor with id {}",
+                                                                           recipient)))
+                                        }
                                     }
                                 }
                                 RoutingMessage::Ok => Ok(RoutingMessage::Ok),
@@ -143,7 +146,7 @@ impl<A> Router<A>
         let res = core.run(client.and_then(|client| client.call(message)));
         match res {
             Ok(resp) => resp,
-            Err(_) => RoutingMessage::Err("Error sending message".to_string()),
+            Err(e) => RoutingMessage::Err(format!("{}", e)),
         }
     }
 
