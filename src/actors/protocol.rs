@@ -1,23 +1,38 @@
-use rustc_serialize::{Decodable, Encodable};
 use std::{io, marker};
 use tokio_core::io::{Io, Codec, Framed, EasyBuf};
 use tokio_proto::pipeline::{ServerProto, ClientProto};
-use super::msgpack;
+use rmp_serialize::{Encoder, Decoder};
+use rustc_serialize::{Encodable, Decodable};
+use super::message::Message;
 
-pub trait SerDeser: Decodable + Encodable + ::std::fmt::Debug + Send + Sync {}
-impl<T> SerDeser for T where T: Decodable + Encodable + ::std::fmt::Debug + Send + Sync {}
+pub fn decode<R: Decodable>(buf: &mut EasyBuf) -> io::Result<Option<R>> {
+    let len = buf.len();
+    let bytes = buf.drain_to(len);
+    let mut decoder = Decoder::new(bytes.as_slice());
+    match Decodable::decode(&mut decoder) {
+        Ok(v) => Ok(Some(v)),
+        Err(e) => Err(io::Error::new(io::ErrorKind::Other, format!("{}", e))),
+    }
+}
+
+pub fn encode<R: Encodable>(msg: R, buf: &mut Vec<u8>) -> io::Result<()> {
+    match msg.encode(&mut Encoder::new(buf)) {
+        Ok(_) => Ok(()),
+        Err(e) => Err(io::Error::new(io::ErrorKind::Other, format!("{}", e))),
+    }
+}
 
 pub struct MsgPackProtocol<Req, Res>
-    where Req: SerDeser,
-          Res: SerDeser
+    where Req: Message,
+          Res: Message
 {
     req: marker::PhantomData<Req>,
     res: marker::PhantomData<Res>,
 }
 
 impl<Req, Res> MsgPackProtocol<Req, Res>
-    where Req: SerDeser,
-          Res: SerDeser
+    where Req: Message,
+          Res: Message
 {
     pub fn new() -> MsgPackProtocol<Req, Res> {
         MsgPackProtocol {
@@ -28,8 +43,8 @@ impl<Req, Res> MsgPackProtocol<Req, Res>
 }
 
 impl<T: Io + 'static, Req: 'static, Res: 'static> ServerProto<T> for MsgPackProtocol<Req, Res>
-    where Req: SerDeser,
-          Res: SerDeser
+    where Req: Message,
+          Res: Message
 {
     type Request = Req;
     type Response = Res;
@@ -43,8 +58,8 @@ impl<T: Io + 'static, Req: 'static, Res: 'static> ServerProto<T> for MsgPackProt
 }
 
 impl<T: Io + 'static, Req: 'static, Res: 'static> ClientProto<T> for MsgPackProtocol<Res, Req>
-    where Req: SerDeser,
-          Res: SerDeser
+    where Req: Message,
+          Res: Message
 {
     type Request = Req;
     type Response = Res;
@@ -58,16 +73,16 @@ impl<T: Io + 'static, Req: 'static, Res: 'static> ClientProto<T> for MsgPackProt
 }
 
 pub struct MsgPackCodec<Req, Res>
-    where Req: SerDeser,
-          Res: SerDeser
+    where Req: Message,
+          Res: Message
 {
     req: marker::PhantomData<Req>,
     res: marker::PhantomData<Res>,
 }
 
 impl<Req, Res> MsgPackCodec<Req, Res>
-    where Req: SerDeser,
-          Res: SerDeser
+    where Req: Message,
+          Res: Message
 {
     pub fn new() -> MsgPackCodec<Req, Res> {
         MsgPackCodec {
@@ -78,8 +93,8 @@ impl<Req, Res> MsgPackCodec<Req, Res>
 }
 
 impl<Req, Res> Codec for MsgPackCodec<Req, Res>
-    where Req: SerDeser,
-          Res: SerDeser
+    where Req: Message,
+          Res: Message
 {
     type In = Req;
     type Out = Res;
@@ -90,11 +105,11 @@ impl<Req, Res> Codec for MsgPackCodec<Req, Res>
             // done with request
             Ok(None)
         } else {
-            msgpack::decode(buf)
+            decode(buf)
         }
     }
 
     fn encode(&mut self, msg: Res, buf: &mut Vec<u8>) -> io::Result<()> {
-        msgpack::encode(msg, buf)
+        encode(msg, buf)
     }
 }

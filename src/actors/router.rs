@@ -1,7 +1,3 @@
-mod path;
-mod msgpack;
-mod protocol;
-
 use std::net;
 use std::io::Error;
 use std::sync::{Arc, RwLock};
@@ -14,12 +10,13 @@ use tokio_service::Service;
 use futures::Future;
 use futures::sink::Sink;
 use futures::stream::Stream;
-use super::actors::Inbox;
-pub use self::path::ActorPath;
-pub use self::protocol::{MsgPackProtocol, MsgPackCodec, SerDeser};
+use super::actor::Inbox;
+use super::path::ActorPath;
+use super::message::Message;
+use super::protocol::{MsgPackProtocol, MsgPackCodec};
 
 #[derive(RustcDecodable, RustcEncodable, Debug)]
-pub enum RoutingMessage<T: SerDeser> {
+pub enum RoutingMessage<T: Message> {
     Ok,
     Message {
         sender: ActorPath,
@@ -28,7 +25,7 @@ pub enum RoutingMessage<T: SerDeser> {
     },
 }
 
-pub struct Router<T: SerDeser + 'static> {
+pub struct Router<T: Message + 'static> {
     core: Core,
     pub inbox: Inbox<RoutingMessage<T>>,
     clients: HashMap<net::SocketAddr,
@@ -38,7 +35,7 @@ pub struct Router<T: SerDeser + 'static> {
 }
 
 impl<T> Router<T>
-    where T: SerDeser + 'static
+    where T: Message + 'static
 {
     pub fn new() -> Router<T> {
         Router {

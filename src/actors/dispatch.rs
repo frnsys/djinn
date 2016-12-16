@@ -3,7 +3,7 @@ use std::cmp::min;
 use threadpool::ThreadPool;
 use std::collections::HashMap;
 use super::actor::{Actor, ActorRef, ActorVecRef};
-use router::{Router, RoutingMessage};
+use super::router::{Router, RoutingMessage};
 
 // Max amount of messages to process per actor
 // during an activation

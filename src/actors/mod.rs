@@ -1,4 +1,9 @@
-pub use self::actor::{Actor, Inbox};
-pub use self::dispatcher::dispatcher;
+mod router;
+mod protocol;
+pub mod node;
+pub mod path;
 pub mod actor;
-pub mod dispatcher;
+pub mod message;
+pub mod dispatch;
+pub use self::actor::{Actor, Inbox};
+pub use self::dispatch::dispatcher;

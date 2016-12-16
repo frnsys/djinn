@@ -14,7 +14,6 @@ impl Decodable for RemoteAddr {
 
 impl Encodable for RemoteAddr {
     fn encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
-        // TODO seems weird
         let addr = self.0.to_string();
         let addr = addr.as_str();
         s.emit_str(addr)

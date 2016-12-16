@@ -10,4 +10,3 @@ extern crate rmp_serialize;
 extern crate rmp;
 extern crate tokio_proto;
 pub mod actors;
-pub mod router;
