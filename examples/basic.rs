@@ -1,7 +1,9 @@
 extern crate djinn;
+extern crate redis;
 extern crate rustc_serialize;
 
 use std::thread;
+use redis::{Commands, Client};
 use djinn::{Agent, Manager, Simulation, Population, Worker, Uuid};
 
 #[derive(RustcDecodable, RustcEncodable, Debug, PartialEq, Clone)]
@@ -100,6 +102,25 @@ fn main() {
     });
 
     let n_steps = 10;
+
+    // Create a client to listen to our reports
+    let log_t = thread::spawn(move || {
+        let client = Client::open(addr).unwrap();
+        let mut pubsub = client.get_pubsub().unwrap();
+        pubsub.subscribe("weather").unwrap();
+        for _ in 0..n_steps {
+            let msg = pubsub.get_message().unwrap();
+            let payload: String = msg.get_payload().unwrap();
+            println!("This step's weather is {}", payload);
+        }
+    });
+
+    // Register a really simple reporter
+    manager.register_reporter(1, |pop, conn| {
+        let world = pop.world();
+        let _: () = conn.publish("weather", world.weather).unwrap();
+    });
+
     let manager_t = thread::spawn(move || {
         manager.start(n_steps);
         manager
@@ -107,6 +128,7 @@ fn main() {
 
     manager = manager_t.join().unwrap();
     worker_t.join().unwrap();
+    log_t.join().unwrap();
 
     let agent = match manager.population.get(id) {
         Some(a) => a,

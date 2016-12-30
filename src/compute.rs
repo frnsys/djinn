@@ -1,5 +1,6 @@
 use std::io;
 use std::ops::Deref;
+use std::collections::HashMap;
 use rmp_serialize::decode::Error;
 use rmp_serialize::{Encoder, Decoder};
 use rustc_serialize::{Encodable, Decodable};
@@ -51,6 +52,11 @@ impl<S: Simulation> Population<S> {
 
     pub fn count(&self) -> usize {
         self.conn.scard::<&str, usize>("population").unwrap()
+    }
+
+    pub fn world(&self) -> S::World {
+        let data = self.conn.get("world").unwrap();
+        decode(data).unwrap()
     }
 
     /// Create a new agent with the specified state, returning the new agent's id.
@@ -122,6 +128,7 @@ impl<S: Simulation> Population<S> {
 
 pub struct Manager<S: Simulation> {
     conn: Connection,
+    reporters: HashMap<usize, Box<Fn(&Population<S>, &Connection) -> () + Send>>,
     pub population: Population<S>,
 }
 
@@ -149,12 +156,8 @@ impl<S: Simulation> Manager<S> {
         Manager {
             conn: conn,
             population: population,
+            reporters: HashMap::new(),
         }
-    }
-
-    pub fn world(&self) -> S::World {
-        let data = self.conn.get("world").unwrap();
-        decode(data).unwrap()
     }
 
     pub fn start(&self, n_steps: usize) -> () {
@@ -171,6 +174,13 @@ impl<S: Simulation> Manager<S> {
         let _: () = self.conn.sunionstore("to_decide", "population").unwrap();
 
         while steps < n_steps {
+            // run any register reporters, if appropriate
+            for (interval, reporter) in self.reporters.iter() {
+                if steps % interval == 0 {
+                    reporter(&self.population, &self.conn);
+                }
+            }
+
             let _: () = self.conn.publish("command", "decide").unwrap();
             let _: () = self.conn.set("current_phase", "decide").unwrap();
             self.wait_until_finished();
@@ -181,6 +191,16 @@ impl<S: Simulation> Manager<S> {
         }
 
         let _: () = self.conn.publish("command", "terminate").unwrap();
+    }
+
+    /// Register a reporter function to be called every `n_steps`.
+    /// It receives a `Population` which can be used to query agents,
+    /// compute aggregate statistics, etc, and a Redis connection
+    /// that can be used, for example, to send reports via pubsub.
+    pub fn register_reporter<F>(&mut self, n_steps: usize, func: F) -> ()
+        where F: Fn(&Population<S>, &Connection) -> () + Send + 'static
+    {
+        self.reporters.insert(n_steps, Box::new(func));
     }
 
     fn wait_until_finished(&self) {
