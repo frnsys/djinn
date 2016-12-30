@@ -4,6 +4,11 @@
 
 Urban simulation and market dynamics toolkit with connectors to popular machine learning tools
 
-This is still heavily a work-in-progress, so there is just a test program to check that things are working. You can compile and run it with:
+This is still heavily a work-in-progress, but there are some examples you can run:
 
-    cargo run --example actors
+    cargo run --example basic
+    cargo run --example culture
+
+## Dependencies
+
+- `redis >= 3.0`

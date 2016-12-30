@@ -4,14 +4,15 @@ version = "0.0.1"
 authors = ["Francis Tseng <f@frnsys.com>"]
 
 [dependencies]
-rustc-serialize = "*"
-threadpool = "1.0"
 futures = "*"
-futures-cpupool = "0.1.2"
-tokio-core = "*"
-tokio-uds = "*"
-rmp = "0.7.5"
+futures-cpupool = "*"
+rustc-serialize = "*"
+rmp = "*"
 rmp-serialize = "*"
-tokio-service = { git = "https://github.com/tokio-rs/tokio-service" }
-tokio-proto = { git = "https://github.com/tokio-rs/tokio-proto" }
+redis = "0.8.0"
+uuid = { version = "0.2", features = ["v4", "rustc-serialize"] }
 cpython = { git = "https://github.com/dgrunwald/rust-cpython.git" }
+
+[dev-dependencies]
+time = "*"
+rand = "*"
