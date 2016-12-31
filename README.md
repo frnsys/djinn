@@ -9,6 +9,8 @@ This is still heavily a work-in-progress, but there are some examples you can ru
     cargo run --example basic
     cargo run --example culture
 
+The `basic` example also has a demo of a frontend client using websockets. Open `examples/ws.html` in a browser, then run the `basic` example to see it in action.
+
 ## Dependencies
 
 - `redis >= 3.0`
