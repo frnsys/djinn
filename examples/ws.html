@@ -1,0 +1,41 @@
+<html>
+<head>
+    <title>djinn ws example</title>
+    <meta charset="utf-8"/>
+</head>
+<body>
+    <ul id="log"></ul>
+</body>
+<script>
+    var logEl = document.getElementById("log");
+    var connected = false;
+    function log(msg) {
+        var li = document.createElement("li");
+        li.innerHTML = msg;
+        logEl.appendChild(li);
+    }
+    function connect() {
+        var s = new WebSocket("ws://127.0.0.1:3012");
+        reconnecting = true;
+        s.onmessage = function(ev) {
+            log(ev.data);
+        };
+        s.onopen = function(ev) {
+            log("connected");
+            connected = true;
+        };
+        s.onclose = function(ev) {
+            if (connected) {
+                log("disconnected");
+            }
+        };
+        s.onerror = function(ev) {
+            if (!connected) {
+                log("trying to reconnect...");
+                connect();
+            }
+        };
+    }
+    connect();
+</script>
+</html>

@@ -1,8 +1,10 @@
 extern crate djinn;
+extern crate redis;
 extern crate rustc_serialize;
 
 use std::thread;
-use djinn::{Agent, Manager, Simulation, Population, Worker, Uuid};
+use redis::{Commands, Client};
+use djinn::{Agent, Manager, Simulation, Population, Worker, Uuid, ws_server};
 
 #[derive(RustcDecodable, RustcEncodable, Debug, PartialEq, Clone)]
 pub struct MyState {
@@ -100,6 +102,32 @@ fn main() {
     });
 
     let n_steps = 10;
+
+    // Create a websocket server to pass messages to frontend clients
+    let ws_t = ws_server("127.0.0.1:3012", addr);
+
+    // Give the frontend some time to connect
+    thread::sleep_ms(2000);
+
+    // Create a client to listen to our reports
+    let log_t = thread::spawn(move || {
+        let client = Client::open(addr).unwrap();
+        let mut pubsub = client.get_pubsub().unwrap();
+        pubsub.subscribe("weather").unwrap();
+        for _ in 0..n_steps {
+            let msg = pubsub.get_message().unwrap();
+            let payload: String = msg.get_payload().unwrap();
+            println!("This step's weather is {}", payload);
+        }
+    });
+
+    // Register a really simple reporter
+    manager.register_reporter(1, |pop, conn| {
+        let world = pop.world();
+        let _: () = conn.publish("weather", world.weather.clone()).unwrap();
+        pop.ws_emit(world.weather.clone());
+    });
+
     let manager_t = thread::spawn(move || {
         manager.start(n_steps);
         manager
@@ -107,6 +135,7 @@ fn main() {
 
     manager = manager_t.join().unwrap();
     worker_t.join().unwrap();
+    log_t.join().unwrap();
 
     let agent = match manager.population.get(id) {
         Some(a) => a,
@@ -115,4 +144,6 @@ fn main() {
 
     println!("{:?}", agent);
     assert_eq!(agent.state.health, health + (12 * n_steps));
+
+    ws_t.join().unwrap();
 }
