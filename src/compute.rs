@@ -59,6 +59,11 @@ impl<S: Simulation> Population<S> {
         decode(data).unwrap()
     }
 
+    /// Send a String to websocket clients.
+    pub fn ws_emit(&self, message: String) -> () {
+        let _: () = self.conn.publish("ws", message).unwrap();
+    }
+
     /// Create a new agent with the specified state, returning the new agent's id.
     pub fn spawn(&self, state: S::State) -> Uuid {
         let id = Uuid::new_v4();
