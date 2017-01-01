@@ -1,5 +1,4 @@
 use std::io;
-use std::ops::Deref;
 use std::collections::HashMap;
 use rmp_serialize::decode::Error;
 use rmp_serialize::{Encoder, Decoder};
@@ -227,7 +226,7 @@ impl<S: Simulation, C: Commands> Manager<S, C> {
 
 pub struct Worker<S: Simulation, C: Commands> {
     id: Uuid,
-    addr: String,
+    manager: Client,
     population: Population<S, C>,
     simulation: S,
 }
@@ -236,38 +235,35 @@ impl<S: Simulation, C: Commands> Worker<S, C> {
     pub fn new(addr: &str, conn: C, simulation: S) -> Worker<S, C> {
         Worker {
             id: Uuid::new_v4(),
-            addr: addr.to_owned(),
+            manager: Client::open(addr).unwrap(),
             population: Population::new(simulation.clone(), conn),
             simulation: simulation,
         }
     }
 
     pub fn start(&self) {
-        let client = Client::open(self.addr.deref()).unwrap();
-        let manager = client.get_connection().unwrap();
-
         // register with the manager
-        let _: () = manager.sadd("workers", self.id.to_string()).unwrap();
+        let _: () = self.manager.sadd("workers", self.id.to_string()).unwrap();
 
         // subscribe to the command channel
-        let mut pubsub = client.get_pubsub().unwrap();
+        let mut pubsub = self.manager.get_pubsub().unwrap();
         pubsub.subscribe("command").unwrap();
 
         // check what the current phase is
-        let phase: String = manager.get("current_phase").unwrap();
-        self.process_cmd(phase.as_ref(), &manager);
+        let phase: String = self.manager.get("current_phase").unwrap();
+        self.process_cmd(phase.as_ref(), &self.manager);
 
         loop {
             let msg = pubsub.get_message().unwrap();
             let payload: String = msg.get_payload().unwrap();
-            self.process_cmd(payload.as_ref(), &manager);
+            self.process_cmd(payload.as_ref(), &self.manager);
             if payload == "terminate" {
                 break;
             }
         }
     }
 
-    fn process_cmd(&self, cmd: &str, conn: &Connection) {
+    fn process_cmd(&self, cmd: &str, conn: &Client) {
         match cmd {
             "terminate" => {
                 let _: () = conn.srem("workers", self.id.to_string()).unwrap();
@@ -285,7 +281,7 @@ impl<S: Simulation, C: Commands> Worker<S, C> {
         }
     }
 
-    fn decide(&self, simulation: &S, conn: &Connection) {
+    fn decide(&self, simulation: &S, conn: &Client) {
         let world = self.population.world();
         while let Ok(id) = conn.spop::<&str, String>("to_decide") {
             let id = Uuid::parse_str(&id).unwrap();
@@ -305,7 +301,7 @@ impl<S: Simulation, C: Commands> Worker<S, C> {
         }
     }
 
-    fn update(&self, simulation: &S, conn: &Connection) {
+    fn update(&self, simulation: &S, conn: &Client) {
         while let Ok(id) = conn.spop::<&str, String>("to_update") {
             let updates: Vec<S::Update> = {
                 let key = format!("updates:{}", id);
