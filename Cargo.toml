@@ -17,4 +17,4 @@ cpython = { git = "https://github.com/dgrunwald/rust-cpython.git" }
 [dev-dependencies]
 time = "*"
 rand = "*"
-redis-cluster = "*"
+redis-cluster = { git = "https://github.com/frnsys/redis-cluster.rs.git" }

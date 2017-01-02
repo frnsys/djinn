@@ -4,8 +4,13 @@ use rmp_serialize::decode::Error;
 use rmp_serialize::{Encoder, Decoder};
 use rustc_serialize::{Encodable, Decodable};
 use sim::{Agent, Simulation};
-use redis::{Commands, Client, Connection, PipelineCommands, pipe};
+use redis::{Commands, Client, Connection};
 use uuid::Uuid;
+
+// use hash tags to ensure these keys hash to the same slot
+const POPULATION_KEY: &'static str = "{pop}population";
+const TO_DECIDE_KEY: &'static str = "{pop}to_decide";
+const TO_UPDATE_KEY: &'static str = "{pop}to_update";
 
 fn decode<R: Decodable>(inp: Vec<u8>) -> Result<R, Error> {
     let mut decoder = Decoder::new(&inp[..]);
@@ -35,7 +40,7 @@ impl<S: Simulation, C: Commands> Population<S, C> {
     }
 
     pub fn count(&self) -> usize {
-        self.conn.scard::<&str, usize>("population").unwrap()
+        self.conn.scard::<&str, usize>(POPULATION_KEY).unwrap()
     }
 
     pub fn world(&self) -> S::World {
@@ -52,7 +57,7 @@ impl<S: Simulation, C: Commands> Population<S, C> {
     pub fn spawn(&self, state: S::State) -> Uuid {
         let id = Uuid::new_v4();
         self.set_agent(id, state.clone());
-        let _: () = self.conn.sadd("population", id.to_string()).unwrap();
+        let _: () = self.conn.sadd(POPULATION_KEY, id.to_string()).unwrap(); // TODO should add to to_decide
         self.simulation.setup(Agent {
                                   id: id,
                                   state: state.clone(),
@@ -79,7 +84,7 @@ impl<S: Simulation, C: Commands> Population<S, C> {
     /// Deletes an agent by id.
     pub fn kill(&self, id: Uuid) {
         let _: () = self.conn.del(id.to_string()).unwrap();
-        let _: () = self.conn.srem("population", id.to_string()).unwrap();
+        let _: () = self.conn.srem(POPULATION_KEY, id.to_string()).unwrap();
     }
 
     /// Lookup agents at a particular index.
@@ -97,10 +102,9 @@ impl<S: Simulation, C: Commands> Population<S, C> {
                 vec![agent]
             }
             _ => {
-                let states_data: Vec<Vec<u8>> = self.conn.get(ids.clone()).unwrap();
                 ids.iter()
-                    .zip(states_data)
-                    .map(|(id, state_data)| {
+                    .map(|id| {
+                        let state_data = self.conn.get(id).unwrap();
                         Agent {
                             id: Uuid::parse_str(id).unwrap(),
                             state: decode(state_data).unwrap(),
@@ -127,7 +131,9 @@ impl<S: Simulation, C: Commands> Population<S, C> {
     /// Reset the population.
     pub fn reset(&self) {
         // reset sets
-        let _: () = self.conn.del("population").unwrap();
+        let _: () = self.conn.del(POPULATION_KEY).unwrap();
+        let _: () = self.conn.del(TO_DECIDE_KEY).unwrap();
+        let _: () = self.conn.del(TO_UPDATE_KEY).unwrap();
         self.reset_indices();
     }
 }
@@ -165,8 +171,6 @@ impl<S: Simulation, C: Commands> Manager<S, C> {
         // reset sets
         let _: () = self.conn.del("workers").unwrap();
         let _: () = self.conn.del("finished").unwrap();
-        let _: () = self.conn.del("to_decide").unwrap();
-        let _: () = self.conn.del("to_update").unwrap();
     }
 
     /// Run the simulation for `n_steps`.
@@ -181,7 +185,7 @@ impl<S: Simulation, C: Commands> Manager<S, C> {
         }
 
         // copy population to the "to_decide" set
-        let _: () = self.conn.sunionstore("to_decide", "population").unwrap();
+        let _: () = self.population.conn.sunionstore(TO_DECIDE_KEY, POPULATION_KEY).unwrap();
 
         while steps < n_steps {
             // run any register reporters, if appropriate
@@ -251,63 +255,72 @@ impl<S: Simulation, C: Commands> Worker<S, C> {
 
         // check what the current phase is
         let phase: String = self.manager.get("current_phase").unwrap();
-        self.process_cmd(phase.as_ref(), &self.manager);
+        self.process_cmd(phase.as_ref());
 
         loop {
             let msg = pubsub.get_message().unwrap();
             let payload: String = msg.get_payload().unwrap();
-            self.process_cmd(payload.as_ref(), &self.manager);
+            self.process_cmd(payload.as_ref());
             if payload == "terminate" {
                 break;
             }
         }
     }
 
-    fn process_cmd(&self, cmd: &str, conn: &Client) {
+    fn process_cmd(&self, cmd: &str) {
         match cmd {
             "terminate" => {
-                let _: () = conn.srem("workers", self.id.to_string()).unwrap();
+                let _: () = self.manager.srem("workers", self.id.to_string()).unwrap();
             }
             "decide" => {
-                self.decide(&self.simulation, &conn);
-                let _: () = conn.sadd("finished", self.id.to_string()).unwrap();
+                self.decide();
+                let _: () = self.manager.sadd("finished", self.id.to_string()).unwrap();
             }
             "update" => {
-                self.update(&self.simulation, &conn);
-                let _: () = conn.sadd("finished", self.id.to_string()).unwrap();
+                self.update();
+                let _: () = self.manager.sadd("finished", self.id.to_string()).unwrap();
             }
             "idle" => (),
             s => println!("Unrecognized command: {}", s),
         }
     }
 
-    fn decide(&self, simulation: &S, conn: &Client) {
+    fn decide(&self) {
         let world = self.population.world();
-        while let Ok(id) = conn.spop::<&str, String>("to_decide") {
+        while let Ok(id) = self.population.conn.spop::<&str, String>(TO_DECIDE_KEY) {
             let id = Uuid::parse_str(&id).unwrap();
             match self.population.get_agent(id) {
                 Some(agent) => {
-                    let updates = simulation.decide(agent, world.clone(), &self.population);
-                    let mut rpipe = pipe();
+                    let updates = self.simulation.decide(agent, world.clone(), &self.population);
+                    // let mut rpipe = pipe();
+                    // for (id, update) in updates {
+                    //     let data = encode(&update).unwrap();
+                    //     rpipe.lpush(format!("updates:{}", id), data).ignore();
+                    // }
+                    // rpipe.sadd(TO_UPDATE_KEY, id.to_string()).ignore();
+                    // let _: () = rpipe.query(&self.population.conn).unwrap();
+
                     for (id, update) in updates {
                         let data = encode(&update).unwrap();
-                        rpipe.lpush(format!("updates:{}", id), data).ignore();
+                        let _: () =
+                            self.population.conn.lpush(format!("updates:{}", id), data).unwrap();
                     }
-                    rpipe.sadd("to_update", id.to_string()).ignore();
-                    let _: () = rpipe.query(conn).unwrap();
+                    let _: () = self.population.conn.sadd(TO_UPDATE_KEY, id.to_string()).unwrap();
                 }
                 None => (),
             }
         }
     }
 
-    fn update(&self, simulation: &S, conn: &Client) {
-        while let Ok(id) = conn.spop::<&str, String>("to_update") {
+    fn update(&self) {
+        while let Ok(id) = self.population.conn.spop::<&str, String>(TO_UPDATE_KEY) {
             let updates: Vec<S::Update> = {
                 let key = format!("updates:{}", id);
-                let updates_data: Vec<Vec<u8>> = conn.lrange(&key, 0, -1)
+                let updates_data: Vec<Vec<u8>> = self.population
+                    .conn
+                    .lrange(&key, 0, -1)
                     .unwrap();
-                let _: () = conn.del(&key).unwrap();
+                let _: () = self.population.conn.del(&key).unwrap();
                 if updates_data.len() == 0 {
                     Vec::new()
                 } else {
@@ -317,9 +330,9 @@ impl<S: Simulation, C: Commands> Worker<S, C> {
             let id = Uuid::parse_str(&id).unwrap();
             match self.population.get_agent(id) {
                 Some(agent) => {
-                    let new_state = simulation.update(agent.state.clone(), updates);
+                    let new_state = self.simulation.update(agent.state.clone(), updates);
                     self.population.set_agent(id, new_state);
-                    let _: () = conn.sadd("to_decide", id.to_string()).unwrap();
+                    let _: () = self.population.conn.sadd(TO_DECIDE_KEY, id.to_string()).unwrap();
                 }
                 None => (),
             }

@@ -1,9 +1,11 @@
 extern crate djinn;
 extern crate redis;
+extern crate redis_cluster;
 extern crate rustc_serialize;
 
 use std::thread;
 use redis::{Commands, Client};
+use redis_cluster::Cluster;
 use djinn::{Agent, Manager, Simulation, Population, Worker, Uuid, WebSocketServer};
 
 #[derive(RustcDecodable, RustcEncodable, Debug, PartialEq, Clone)]
@@ -95,8 +97,12 @@ fn main() {
 
     // Setup the manager
     let addr = "redis://127.0.0.1/";
-    let client = Client::open(addr).unwrap();
-    let mut manager = Manager::new(addr, client, sim, world);
+
+    let startup_nodes =
+        vec!["redis://127.0.0.1:7000", "redis://127.0.0.1:7001", "redis://127.0.0.1:7002"];
+    let pop_client = Cluster::new(startup_nodes.clone());
+    // let pop_client = Client::open(addr).unwrap();
+    let mut manager = Manager::new(addr, pop_client, sim, world);
 
     // Spawn the population
     manager.population.spawn(state.clone());
@@ -106,8 +112,9 @@ fn main() {
     // Create a worker on a separate thread
     let worker_t = thread::spawn(move || {
         let sim = MySimulation {};
-        let client = Client::open(addr).unwrap();
-        let worker = Worker::new(addr, client, sim);
+        // let pop_client = Client::open(addr).unwrap();
+        let pop_client = Cluster::new(startup_nodes.clone());
+        let worker = Worker::new(addr, pop_client, sim);
         worker.start();
     });
 
