@@ -7,7 +7,7 @@ Urban simulation and market dynamics toolkit with connectors to popular machine 
 This is still heavily a work-in-progress, but there are some examples you can run:
 
     cargo run --example basic
-    cargo run --example culture
+    cargo run --example multiple
 
 The `basic` example also has a demo of a frontend client using websockets. Open `examples/ws.html` in a browser, then run the `basic` example to see it in action.
 
