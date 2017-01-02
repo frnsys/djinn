@@ -4,8 +4,6 @@ version = "0.0.1"
 authors = ["Francis Tseng <f@frnsys.com>"]
 
 [dependencies]
-futures = "*"
-futures-cpupool = "*"
 rustc-serialize = "*"
 rmp = "*"
 rmp-serialize = "*"
