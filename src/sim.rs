@@ -1,5 +1,6 @@
 use uuid::Uuid;
 use std::fmt::Debug;
+use redis::Commands;
 use compute::Population;
 use rustc_serialize::{Decodable, Encodable};
 
@@ -31,14 +32,17 @@ pub trait Simulation: Sized + Clone {
 
     /// Called whenever a new agent is spawned.
     /// You can use this to, for example, build an index of agents by state values.
-    fn setup(&self, agent: Agent<Self::State>, population: &Population<Self>) -> ();
+    fn setup<C: Commands>(&self,
+                          agent: Agent<Self::State>,
+                          population: &Population<Self, C>)
+                          -> ();
 
     /// Computes updates for the specified agents and/or other agents.
-    fn decide(&self,
-              agent: Agent<Self::State>,
-              world: Self::World,
-              population: &Population<Self>)
-              -> Vec<(Uuid, Self::Update)>;
+    fn decide<C: Commands>(&self,
+                           agent: Agent<Self::State>,
+                           world: Self::World,
+                           population: &Population<Self, C>)
+                           -> Vec<(Uuid, Self::Update)>;
 
     /// Compute a final updated state given a starting state and updates.
     fn update(&self, state: Self::State, updates: Vec<Self::Update>) -> Self::State;
