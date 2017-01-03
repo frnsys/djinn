@@ -1,4 +1,5 @@
 extern crate ws;
+extern crate time;
 extern crate uuid;
 extern crate redis;
 extern crate rustc_serialize;
