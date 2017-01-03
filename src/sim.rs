@@ -1,7 +1,6 @@
 use uuid::Uuid;
 use std::fmt::Debug;
-use redis::Commands;
-use compute::Population;
+use compute::{Population, Redis};
 use rustc_serialize::{Decodable, Encodable};
 
 pub trait State: Decodable + Encodable + Debug + Send + Sync + Clone + PartialEq {}
@@ -25,24 +24,21 @@ pub struct Agent<S: State> {
 ///    updates themselves are _not_ applied in this phase.
 /// 2. `update`: this is a phase where agents consider queued updates and compute a new state
 ///    accordingly.
-pub trait Simulation: Sized + Clone {
+pub trait Simulation: Sized + Send + Clone {
     type State: State;
     type World: State;
     type Update: Update;
 
     /// Called whenever a new agent is spawned.
     /// You can use this to, for example, build an index of agents by state values.
-    fn setup<C: Commands>(&self,
-                          agent: Agent<Self::State>,
-                          population: &Population<Self, C>)
-                          -> ();
+    fn setup<R: Redis>(&self, agent: Agent<Self::State>, population: &Population<Self, R>) -> ();
 
     /// Computes updates for the specified agents and/or other agents.
-    fn decide<C: Commands>(&self,
-                           agent: Agent<Self::State>,
-                           world: Self::World,
-                           population: &Population<Self, C>)
-                           -> Vec<(Uuid, Self::Update)>;
+    fn decide<R: Redis>(&self,
+                        agent: Agent<Self::State>,
+                        world: Self::World,
+                        population: &Population<Self, R>)
+                        -> Vec<(Uuid, Self::Update)>;
 
     /// Compute a final updated state given a starting state and updates.
     fn update(&self, state: Self::State, updates: Vec<Self::Update>) -> Self::State;

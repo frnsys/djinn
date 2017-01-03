@@ -4,9 +4,9 @@ extern crate redis_cluster;
 extern crate rustc_serialize;
 
 use std::thread;
-use redis::{Commands, Client};
+use redis::{Client, Commands};
 use redis_cluster::Cluster;
-use djinn::{Agent, Manager, Simulation, Population, Worker, Uuid, WebSocketServer};
+use djinn::{Agent, Manager, Simulation, Population, Worker, Uuid, Redis, WebSocketServer};
 
 #[derive(RustcDecodable, RustcEncodable, Debug, PartialEq, Clone)]
 pub struct MyState {
@@ -33,18 +33,15 @@ impl Simulation for MySimulation {
     type Update = MyUpdate;
     type World = MyWorld;
 
-    fn setup<C: Commands>(&self,
-                          agent: Agent<Self::State>,
-                          population: &Population<Self, C>)
-                          -> () {
+    fn setup<R: Redis>(&self, agent: Agent<Self::State>, population: &Population<Self, R>) -> () {
         population.index(agent.state.name.as_ref(), agent.id.clone());
     }
 
-    fn decide<C: Commands>(&self,
-                           agent: Agent<Self::State>,
-                           world: Self::World,
-                           population: &Population<Self, C>)
-                           -> Vec<(Uuid, Self::Update)> {
+    fn decide<R: Redis>(&self,
+                        agent: Agent<Self::State>,
+                        world: Self::World,
+                        population: &Population<Self, R>)
+                        -> Vec<(Uuid, Self::Update)> {
         let mut updates = Vec::new();
         match agent.state.name.as_ref() {
             "hello" => {
@@ -100,8 +97,8 @@ fn main() {
 
     let startup_nodes =
         vec!["redis://127.0.0.1:7000", "redis://127.0.0.1:7001", "redis://127.0.0.1:7002"];
-    let pop_client = Cluster::new(startup_nodes.clone());
-    // let pop_client = Client::open(addr).unwrap();
+    // let pop_client = Cluster::new(startup_nodes.clone());
+    let pop_client = Client::open(addr).unwrap();
     let mut manager = Manager::new(addr, pop_client, sim, world);
 
     // Spawn the population
@@ -112,8 +109,8 @@ fn main() {
     // Create a worker on a separate thread
     let worker_t = thread::spawn(move || {
         let sim = MySimulation {};
-        // let pop_client = Client::open(addr).unwrap();
-        let pop_client = Cluster::new(startup_nodes.clone());
+        let pop_client = Client::open(addr).unwrap();
+        // let pop_client = Cluster::new(startup_nodes.clone());
         let worker = Worker::new(addr, pop_client, sim);
         worker.start();
     });

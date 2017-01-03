@@ -1,11 +1,15 @@
 use std::io;
+use std::thread;
 use std::collections::HashMap;
 use rmp_serialize::decode::Error;
 use rmp_serialize::{Encoder, Decoder};
 use rustc_serialize::{Encodable, Decodable};
 use sim::{Agent, Simulation};
-use redis::{Commands, Client, Connection};
+use redis::{Commands, Client};
 use uuid::Uuid;
+
+pub trait Redis: Commands + Send + Clone {}
+impl<T> Redis for T where T: Commands + Send + Clone {}
 
 // use hash tags to ensure these keys hash to the same slot
 const POPULATION_KEY: &'static str = "{pop}population";
@@ -26,12 +30,12 @@ fn encode<R: Encodable>(data: R) -> Result<Vec<u8>, io::Error> {
 }
 
 /// An interface to the Redis-backed agent population.
-pub struct Population<S: Simulation, C: Commands> {
+pub struct Population<S: Simulation, C: Redis> {
     conn: C,
     simulation: S,
 }
 
-impl<S: Simulation, C: Commands> Population<S, C> {
+impl<S: Simulation, C: Redis> Population<S, C> {
     pub fn new(simulation: S, conn: C) -> Population<S, C> {
         Population {
             conn: conn,
@@ -134,17 +138,19 @@ impl<S: Simulation, C: Commands> Population<S, C> {
         let _: () = self.conn.del(POPULATION_KEY).unwrap();
         let _: () = self.conn.del(TO_DECIDE_KEY).unwrap();
         let _: () = self.conn.del(TO_UPDATE_KEY).unwrap();
+        let _: () = self.conn.del("population_updates").unwrap();
         self.reset_indices();
     }
 }
 
-pub struct Manager<S: Simulation, C: Commands> {
-    conn: Connection,
-    reporters: HashMap<usize, Box<Fn(&Population<S, C>, &Connection) -> () + Send>>,
+pub struct Manager<S: Simulation, C: Redis> {
+    addr: String,
+    conn: Client,
+    reporters: HashMap<usize, Box<Fn(&Population<S, C>, &Client) -> () + Send>>,
     pub population: Population<S, C>,
 }
 
-impl<S: Simulation, C: Commands> Manager<S, C> {
+impl<S: Simulation, C: Redis> Manager<S, C> {
     pub fn new(addr: &str, conn: C, simulation: S, world: S::World) -> Manager<S, C> {
         let population = Population::new(simulation, conn);
         population.reset();
@@ -152,12 +158,12 @@ impl<S: Simulation, C: Commands> Manager<S, C> {
 
         // conn for commanding workers
         let client = Client::open(addr).unwrap();
-        let conn = client.get_connection().unwrap();
 
         let m = Manager {
+            addr: addr.to_owned(),
             population: population,
             reporters: HashMap::new(),
-            conn: conn,
+            conn: client,
         };
         m.reset();
         m
@@ -212,7 +218,7 @@ impl<S: Simulation, C: Commands> Manager<S, C> {
     /// compute aggregate statistics, etc, and a Redis connection
     /// that can be used, for example, to send reports via pubsub.
     pub fn register_reporter<F>(&mut self, n_steps: usize, func: F) -> ()
-        where F: Fn(&Population<S, C>, &Connection) -> () + Send + 'static
+        where F: Fn(&Population<S, C>, &Client) -> () + Send + 'static
     {
         self.reporters.insert(n_steps, Box::new(func));
     }
@@ -228,14 +234,14 @@ impl<S: Simulation, C: Commands> Manager<S, C> {
     }
 }
 
-pub struct Worker<S: Simulation, C: Commands> {
+pub struct Worker<S: Simulation, C: Redis> {
     id: Uuid,
     manager: Client,
     population: Population<S, C>,
     simulation: S,
 }
 
-impl<S: Simulation, C: Commands> Worker<S, C> {
+impl<S: Simulation, C: Redis> Worker<S, C> {
     pub fn new(addr: &str, conn: C, simulation: S) -> Worker<S, C> {
         Worker {
             id: Uuid::new_v4(),
@@ -337,5 +343,53 @@ impl<S: Simulation, C: Commands> Worker<S, C> {
                 None => (),
             }
         }
+    }
+}
+
+
+/// Convenience function for running a simulation/manager with a n workers.
+/// This blocks until the simulation is finished running.
+pub fn run<S: Simulation + 'static, R: Redis + 'static>(sim: S,
+                                                        manager: Manager<S, R>,
+                                                        n_workers: usize,
+                                                        n_steps: usize)
+                                                        -> Manager<S, R> {
+
+    let addr = manager.addr.clone();
+    let pop_client = manager.population.conn.clone();
+
+    // run the manager on a separate thread
+    let manager_t = thread::spawn(move || {
+        manager.run(n_steps);
+        manager
+    });
+
+    run_workers(addr.as_ref(), pop_client, sim.clone(), n_workers);
+    manager_t.join().unwrap()
+}
+
+/// Convenience function to run a node of n workers.
+/// This blocks until the workers are done.
+pub fn run_workers<S: Simulation + 'static, R: Redis + 'static>(addr: &str,
+                                                                pop_client: R,
+                                                                sim: S,
+                                                                n_workers: usize) {
+    let addr = addr.to_owned();
+    let worker_ts: Vec<thread::JoinHandle<()>> = (0..n_workers)
+        .map(|_| {
+            // create a worker on a separate thread
+            let addr = addr.clone();
+            let sim = sim.clone();
+            let pop_client = pop_client.clone();
+            thread::spawn(move || {
+                let worker = Worker::new(addr.as_ref(), pop_client, sim);
+                worker.start();
+            })
+        })
+        .collect();
+
+    // block til done running
+    for t in worker_ts {
+        t.join().unwrap();
     }
 }

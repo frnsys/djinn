@@ -11,4 +11,4 @@ mod compute;
 pub use uuid::Uuid;
 pub use event::WebSocketServer;
 pub use sim::{Agent, Update, State, Simulation};
-pub use compute::{Population, Manager, Worker};
+pub use compute::{Population, Manager, Worker, Redis, run, run_workers};
