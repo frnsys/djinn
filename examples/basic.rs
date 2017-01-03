@@ -104,6 +104,7 @@ fn main() {
     // Spawn the population
     manager.population.spawn(state.clone());
     let id = manager.population.spawn(state2.clone());
+    manager.population.update();
     assert_eq!(manager.population.count(), 2);
 
     // Create a worker on a separate thread

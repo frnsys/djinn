@@ -128,6 +128,7 @@ fn main() {
     // Spawn the population
     manager.population.spawn(person.clone());
     let id = manager.population.spawn(cat.clone());
+    manager.population.update();
     assert_eq!(manager.population.count(), 2);
 
     // Create a worker on a separate thread

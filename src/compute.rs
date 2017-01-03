@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use rmp_serialize::decode::Error;
 use rmp_serialize::{Encoder, Decoder};
 use rustc_serialize::{Encodable, Decodable};
-use sim::{Agent, Simulation};
+use sim::{Agent, Simulation, State};
 use redis::{Commands, Client};
 use uuid::Uuid;
 
@@ -15,6 +15,7 @@ impl<T> Redis for T where T: Commands + Send + Clone {}
 const POPULATION_KEY: &'static str = "{pop}population";
 const TO_DECIDE_KEY: &'static str = "{pop}to_decide";
 const TO_UPDATE_KEY: &'static str = "{pop}to_update";
+const POP_UPDATES_KEY: &'static str = "{pop}updates";
 
 fn decode<R: Decodable>(inp: Vec<u8>) -> Result<R, Error> {
     let mut decoder = Decoder::new(&inp[..]);
@@ -27,6 +28,12 @@ fn encode<R: Encodable>(data: R) -> Result<Vec<u8>, io::Error> {
         Ok(_) => Ok(buf),
         Err(e) => Err(io::Error::new(io::ErrorKind::Other, format!("{}", e))),
     }
+}
+
+#[derive(RustcDecodable, RustcEncodable, Debug, PartialEq, Clone)]
+pub enum PopulationUpdate<S: State> {
+    Spawn(Uuid, S),
+    Kill(Uuid),
 }
 
 /// An interface to the Redis-backed agent population.
@@ -58,8 +65,17 @@ impl<S: Simulation, C: Redis> Population<S, C> {
     }
 
     /// Create a new agent with the specified state, returning the new agent's id.
+    /// This does not actually spawn the agent, it just queues it.
+    /// Run the `update` method to execute it (and other queued updates).
     pub fn spawn(&self, state: S::State) -> Uuid {
         let id = Uuid::new_v4();
+        let update = PopulationUpdate::Spawn(id, state);
+        let data = encode(&update).unwrap();
+        let _: () = self.conn.sadd(POP_UPDATES_KEY, data).unwrap();
+        id
+    }
+
+    fn _spawn(&self, id: Uuid, state: S::State) {
         self.set_agent(id, state.clone());
         let _: () = self.conn.sadd(POPULATION_KEY, id.to_string()).unwrap(); // TODO should add to to_decide
         self.simulation.setup(Agent {
@@ -67,7 +83,6 @@ impl<S: Simulation, C: Redis> Population<S, C> {
                                   state: state.clone(),
                               },
                               &self);
-        id
     }
 
     /// Get an agent by id.
@@ -86,9 +101,36 @@ impl<S: Simulation, C: Redis> Population<S, C> {
     }
 
     /// Deletes an agent by id.
+    /// This does not actually execute the kill, it just queues it.
+    /// Run the `update` method to execute it (and other queued updates).
     pub fn kill(&self, id: Uuid) {
+        let update: PopulationUpdate<S::State> = PopulationUpdate::Kill(id);
+        let data = encode(&update).unwrap();
+        let _: () = self.conn.sadd(POP_UPDATES_KEY, data).unwrap();
+    }
+
+    fn _kill(&self, id: Uuid) {
         let _: () = self.conn.del(id.to_string()).unwrap();
         let _: () = self.conn.srem(POPULATION_KEY, id.to_string()).unwrap();
+        let _: () = self.conn.srem(TO_DECIDE_KEY, id.to_string()).unwrap();
+        let _: () = self.conn.srem(TO_UPDATE_KEY, id.to_string()).unwrap();
+    }
+
+    /// Process queued updates.
+    pub fn update(&self) {
+        while let Ok(data) = self.conn.spop::<&str, Vec<u8>>(POP_UPDATES_KEY) {
+            // this doesn't know when to stop popping;
+            // it will pop empty vecs when it's done
+            if data.len() > 0 {
+                let update: PopulationUpdate<S::State> = decode(data).unwrap();
+                match update {
+                    PopulationUpdate::Kill(id) => self._kill(id),
+                    PopulationUpdate::Spawn(id, state) => self._spawn(id, state),
+                }
+            } else {
+                break;
+            }
+        }
     }
 
     /// Lookup agents at a particular index.
@@ -138,7 +180,7 @@ impl<S: Simulation, C: Redis> Population<S, C> {
         let _: () = self.conn.del(POPULATION_KEY).unwrap();
         let _: () = self.conn.del(TO_DECIDE_KEY).unwrap();
         let _: () = self.conn.del(TO_UPDATE_KEY).unwrap();
-        let _: () = self.conn.del("population_updates").unwrap();
+        let _: () = self.conn.del(POP_UPDATES_KEY).unwrap();
         self.reset_indices();
     }
 }
@@ -207,6 +249,7 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
             let _: () = self.conn.publish("command", "update").unwrap();
             let _: () = self.conn.set("current_phase", "update").unwrap();
             self.wait_until_finished();
+            self.population.update();
             steps += 1;
         }
 
