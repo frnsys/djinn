@@ -9,8 +9,8 @@ extern crate redis_cluster;
 extern crate rustc_serialize;
 
 use std::thread;
-use redis::{Commands, Client};
-use djinn::{Agent, Manager, Simulation, Population, Worker, Uuid};
+use redis::Client;
+use djinn::{Agent, Manager, Simulation, Population, Worker, Uuid, Redis};
 
 #[derive(RustcDecodable, RustcEncodable, Debug, PartialEq, Clone)]
 pub enum MyState {
@@ -38,17 +38,13 @@ impl Simulation for MySimulation {
     type Update = MyUpdate;
     type World = MyWorld;
 
-    fn setup<C: Commands>(&self,
-                          agent: Agent<Self::State>,
-                          population: &Population<Self, C>)
-                          -> () {
-    }
+    fn setup<R: Redis>(&self, agent: Agent<Self::State>, population: &Population<Self, R>) -> () {}
 
-    fn decide<C: Commands>(&self,
-                           agent: Agent<Self::State>,
-                           world: Self::World,
-                           population: &Population<Self, C>)
-                           -> Vec<(Uuid, Self::Update)> {
+    fn decide<R: Redis>(&self,
+                        agent: Agent<Self::State>,
+                        world: Self::World,
+                        population: &Population<Self, R>)
+                        -> Vec<(Uuid, Self::Update)> {
         let mut updates = Vec::new();
         match agent.state {
             MyState::Person { name, health } => {
@@ -132,6 +128,7 @@ fn main() {
     // Spawn the population
     manager.population.spawn(person.clone());
     let id = manager.population.spawn(cat.clone());
+    manager.population.update();
     assert_eq!(manager.population.count(), 2);
 
     // Create a worker on a separate thread

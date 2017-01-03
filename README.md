@@ -13,4 +13,4 @@ The `basic` example also has a demo of a frontend client using websockets. Open 
 
 ## Dependencies
 
-- `redis >= 3.0`
+- `redis >= 3.2`

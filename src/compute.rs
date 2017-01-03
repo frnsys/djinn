@@ -1,16 +1,29 @@
 use std::io;
+use std::thread;
 use std::collections::HashMap;
 use rmp_serialize::decode::Error;
 use rmp_serialize::{Encoder, Decoder};
 use rustc_serialize::{Encodable, Decodable};
-use sim::{Agent, Simulation};
-use redis::{Commands, Client, Connection};
+use sim::{Agent, Simulation, State};
+use redis::{Cmd, Commands, Client};
 use uuid::Uuid;
+
+use time::PreciseTime;
+
+pub trait Redis: Commands + Send + Clone {}
+impl<T> Redis for T where T: Commands + Send + Clone {}
 
 // use hash tags to ensure these keys hash to the same slot
 const POPULATION_KEY: &'static str = "{pop}population";
 const TO_DECIDE_KEY: &'static str = "{pop}to_decide";
 const TO_UPDATE_KEY: &'static str = "{pop}to_update";
+const POP_UPDATES_KEY: &'static str = "{pop}updates";
+
+// How many agents workers should fetch and process at once.
+// This larger this is, the less network communication with Redis (i.e. reduces overhead).
+// But if you make this too large, the advantage of multiple workers decreases.
+// TODO this should probably be configurable by the end user
+const THROUGHPUT: usize = 100;
 
 fn decode<R: Decodable>(inp: Vec<u8>) -> Result<R, Error> {
     let mut decoder = Decoder::new(&inp[..]);
@@ -25,13 +38,19 @@ fn encode<R: Encodable>(data: R) -> Result<Vec<u8>, io::Error> {
     }
 }
 
+#[derive(RustcDecodable, RustcEncodable, Debug, PartialEq, Clone)]
+pub enum PopulationUpdate<S: State> {
+    Spawn(Uuid, S),
+    Kill(Uuid, S),
+}
+
 /// An interface to the Redis-backed agent population.
-pub struct Population<S: Simulation, C: Commands> {
-    conn: C,
+pub struct Population<S: Simulation, C: Redis> {
+    pub conn: C,
     simulation: S,
 }
 
-impl<S: Simulation, C: Commands> Population<S, C> {
+impl<S: Simulation, C: Redis> Population<S, C> {
     pub fn new(simulation: S, conn: C) -> Population<S, C> {
         Population {
             conn: conn,
@@ -53,19 +72,6 @@ impl<S: Simulation, C: Commands> Population<S, C> {
         let _: () = self.conn.set("world", data).unwrap();
     }
 
-    /// Create a new agent with the specified state, returning the new agent's id.
-    pub fn spawn(&self, state: S::State) -> Uuid {
-        let id = Uuid::new_v4();
-        self.set_agent(id, state.clone());
-        let _: () = self.conn.sadd(POPULATION_KEY, id.to_string()).unwrap(); // TODO should add to to_decide
-        self.simulation.setup(Agent {
-                                  id: id,
-                                  state: state.clone(),
-                              },
-                              &self);
-        id
-    }
-
     /// Get an agent by id.
     pub fn get_agent(&self, id: Uuid) -> Option<Agent<S::State>> {
         let data = self.conn.get(id.to_string()).unwrap();
@@ -75,16 +81,134 @@ impl<S: Simulation, C: Commands> Population<S, C> {
         })
     }
 
+    /// Get agents by ids.
+    /// If you need to fetch multiple agents, you should use this as it makes only one network
+    /// request.
+    // TODO this will probably not work with a redis cluster b/c each id hashes to a different
+    // slot...
+    pub fn get_agents(&self, ids: Vec<String>) -> Vec<Agent<S::State>> {
+        if ids.len() == 1 {
+            let id = Uuid::parse_str(ids[0].as_ref()).unwrap();
+            let agent = self.get_agent(id).unwrap();
+            vec![agent]
+        } else if ids.len() > 0 {
+            let datas = self.conn.get::<Vec<String>, Vec<Vec<u8>>>(ids.clone()).unwrap();
+            ids.iter()
+                .zip(datas.iter())
+                .map(|(id, data)| {
+                    Agent {
+                        id: Uuid::parse_str(id).unwrap(),
+                        state: decode(data.clone()).unwrap(),
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Set an agent state by id.
     pub fn set_agent(&self, id: Uuid, state: S::State) {
         let data = encode(&state).unwrap();
         let _: () = self.conn.set(id.to_string(), data).unwrap();
     }
 
+    /// Set multple agent states by ids.
+    /// If you need to update multiple agents, you should use this as it makes only one network
+    /// request.
+    pub fn set_agents(&self, updates: Vec<(Uuid, S::State)>) {
+        if updates.len() == 1 {
+            let (id, ref state) = updates[0];
+            self.set_agent(id, state.clone());
+        } else if updates.len() > 0 {
+            let encoded: Vec<(String, Vec<u8>)> = updates.iter()
+                .map(|&(id, ref state)| (id.to_string(), encode(&state).unwrap()))
+                .collect();
+            let _: () = self.conn.set_multiple(encoded.as_slice()).unwrap();
+        }
+    }
+
+    /// Create a new agent with the specified state, returning the new agent's id.
+    /// This does not actually spawn the agent, it just queues it.
+    /// Run the `update` method to execute it (and other queued updates).
+    pub fn spawn(&self, state: S::State) -> Uuid {
+        let id = Uuid::new_v4();
+        let update = PopulationUpdate::Spawn(id, state);
+        let data = encode(&update).unwrap();
+        let _: () = self.conn.sadd(POP_UPDATES_KEY, data).unwrap();
+        id
+    }
+
+    fn spawns(&self, to_spawn: Vec<(Uuid, S::State)>) {
+        if to_spawn.len() > 0 {
+            let ids: Vec<String> = to_spawn.iter().map(|&(id, _)| id.to_string()).collect();
+
+            // TODO pipeline this?
+            let _: () = self.conn.sadd(POPULATION_KEY, ids.clone()).unwrap();
+            let _: () = self.conn.sadd(TO_DECIDE_KEY, ids.clone()).unwrap();
+            let agents = to_spawn.iter()
+                .map(|&(id, ref state)| {
+                    Agent {
+                        id: id.clone(),
+                        state: state.clone(),
+                    }
+                })
+                .collect();
+            self.set_agents(to_spawn);
+            self.simulation.on_spawns(agents, &self);
+        }
+    }
+
+    // TODO these should may be bulked too, part of the updates vec
     /// Deletes an agent by id.
-    pub fn kill(&self, id: Uuid) {
-        let _: () = self.conn.del(id.to_string()).unwrap();
-        let _: () = self.conn.srem(POPULATION_KEY, id.to_string()).unwrap();
+    /// This does not actually execute the kill, it just queues it.
+    /// Run the `update` method to execute it (and other queued updates).
+    pub fn kill(&self, agent: Agent<S::State>) {
+        let update: PopulationUpdate<S::State> = PopulationUpdate::Kill(agent.id, agent.state);
+        let data = encode(&update).unwrap();
+        let _: () = self.conn.sadd(POP_UPDATES_KEY, data).unwrap();
+    }
+
+    fn kills(&self, to_kill: Vec<(Uuid, S::State)>) {
+        if to_kill.len() > 0 {
+            let ids: Vec<String> = to_kill.iter().map(|&(id, _)| id.to_string()).collect();
+
+            // TODO pipeline this? or use set operations?
+            let _: () = self.conn.del(ids.clone()).unwrap();
+            let _: () = self.conn.srem(POPULATION_KEY, ids.clone()).unwrap();
+            let _: () = self.conn.srem(TO_DECIDE_KEY, ids.clone()).unwrap();
+            let _: () = self.conn.srem(TO_UPDATE_KEY, ids.clone()).unwrap();
+
+            let agents = to_kill.iter()
+                .map(|&(id, ref state)| {
+                    Agent {
+                        id: id.clone(),
+                        state: state.clone(),
+                    }
+                })
+                .collect();
+            self.simulation.on_deaths(agents, &self);
+        }
+    }
+
+    /// Process queued updates.
+    pub fn update(&self) {
+        let mut to_kill = Vec::new();
+        let mut to_spawn = Vec::new();
+        let updates = self.conn.smembers::<&str, Vec<Vec<u8>>>(POP_UPDATES_KEY).unwrap();
+        for data in updates {
+            let update: PopulationUpdate<S::State> = decode(data).unwrap();
+            match update {
+                PopulationUpdate::Kill(id, state) => {
+                    to_kill.push((id, state));
+                }
+                PopulationUpdate::Spawn(id, state) => {
+                    to_spawn.push((id, state));
+                }
+            }
+        }
+        self.kills(to_kill);
+        self.spawns(to_spawn);
     }
 
     /// Lookup agents at a particular index.
@@ -115,9 +239,34 @@ impl<S: Simulation, C: Commands> Population<S, C> {
         }
     }
 
+    pub fn count_index(&self, index: &str) -> usize {
+        self.conn.scard(format!("idx:{}", index)).unwrap()
+    }
+
     /// Add an agent (id) to an index.
     pub fn index(&self, index: &str, id: Uuid) {
         let _: () = self.conn.sadd(format!("idx:{}", index), id.to_string()).unwrap();
+    }
+
+    /// Add agents (ids) to an index.
+    pub fn indexes(&self, index: &str, ids: Vec<Uuid>) {
+        if ids.len() > 0 {
+            let ids: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+            let _: () = self.conn.sadd(format!("idx:{}", index), ids).unwrap();
+        }
+    }
+
+    /// Remove an agent (id) from an index.
+    pub fn unindex(&self, index: &str, id: Uuid) {
+        let _: () = self.conn.srem(format!("idx:{}", index), id.to_string()).unwrap();
+    }
+
+    /// Remove an agent (id) from an index.
+    pub fn unindexes(&self, index: &str, ids: Vec<Uuid>) {
+        if ids.len() > 0 {
+            let ids: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+            let _: () = self.conn.srem(format!("idx:{}", index), ids).unwrap();
+        }
     }
 
     /// Reset indices.
@@ -134,17 +283,19 @@ impl<S: Simulation, C: Commands> Population<S, C> {
         let _: () = self.conn.del(POPULATION_KEY).unwrap();
         let _: () = self.conn.del(TO_DECIDE_KEY).unwrap();
         let _: () = self.conn.del(TO_UPDATE_KEY).unwrap();
+        let _: () = self.conn.del(POP_UPDATES_KEY).unwrap();
         self.reset_indices();
     }
 }
 
-pub struct Manager<S: Simulation, C: Commands> {
-    conn: Connection,
-    reporters: HashMap<usize, Box<Fn(&Population<S, C>, &Connection) -> () + Send>>,
+pub struct Manager<S: Simulation, C: Redis> {
+    addr: String,
+    conn: Client,
+    reporters: HashMap<usize, Box<Fn(usize, &Population<S, C>, &Client) -> () + Send>>,
     pub population: Population<S, C>,
 }
 
-impl<S: Simulation, C: Commands> Manager<S, C> {
+impl<S: Simulation, C: Redis> Manager<S, C> {
     pub fn new(addr: &str, conn: C, simulation: S, world: S::World) -> Manager<S, C> {
         let population = Population::new(simulation, conn);
         population.reset();
@@ -152,12 +303,12 @@ impl<S: Simulation, C: Commands> Manager<S, C> {
 
         // conn for commanding workers
         let client = Client::open(addr).unwrap();
-        let conn = client.get_connection().unwrap();
 
         let m = Manager {
+            addr: addr.to_owned(),
             population: population,
             reporters: HashMap::new(),
-            conn: conn,
+            conn: client,
         };
         m.reset();
         m
@@ -188,22 +339,44 @@ impl<S: Simulation, C: Commands> Manager<S, C> {
         let _: () = self.population.conn.sunionstore(TO_DECIDE_KEY, POPULATION_KEY).unwrap();
 
         while steps < n_steps {
+            let start = PreciseTime::now();
+
             // run any register reporters, if appropriate
             for (interval, reporter) in self.reporters.iter() {
                 if steps % interval == 0 {
-                    reporter(&self.population, &self.conn);
+                    reporter(steps, &self.population, &self.conn);
                 }
             }
 
+            println!("starting step");
+            let s = PreciseTime::now();
             let _: () = self.conn.publish("command", "decide").unwrap();
             let _: () = self.conn.set("current_phase", "decide").unwrap();
             self.wait_until_finished();
+            let _: () = self.conn.del("finished").unwrap();
+            let e = PreciseTime::now();
+            println!("STEP: decide took: {}", s.to(e));
+
+            let s = PreciseTime::now();
             let _: () = self.conn.publish("command", "update").unwrap();
             let _: () = self.conn.set("current_phase", "update").unwrap();
             self.wait_until_finished();
+            let _: () = self.conn.del("finished").unwrap();
+            let e = PreciseTime::now();
+            println!("STEP: update took: {}", s.to(e));
+
+            let s = PreciseTime::now();
+            self.population.update();
+            let e = PreciseTime::now();
+            println!("STEP: pop update took: {}", s.to(e));
+
             steps += 1;
+
+            let end = PreciseTime::now();
+            println!("step took: {}", start.to(end));
         }
 
+        println!("done. terminating workers");
         let _: () = self.conn.publish("command", "terminate").unwrap();
     }
 
@@ -212,7 +385,7 @@ impl<S: Simulation, C: Commands> Manager<S, C> {
     /// compute aggregate statistics, etc, and a Redis connection
     /// that can be used, for example, to send reports via pubsub.
     pub fn register_reporter<F>(&mut self, n_steps: usize, func: F) -> ()
-        where F: Fn(&Population<S, C>, &Connection) -> () + Send + 'static
+        where F: Fn(usize, &Population<S, C>, &Client) -> () + Send + 'static
     {
         self.reporters.insert(n_steps, Box::new(func));
     }
@@ -228,14 +401,14 @@ impl<S: Simulation, C: Commands> Manager<S, C> {
     }
 }
 
-pub struct Worker<S: Simulation, C: Commands> {
+pub struct Worker<S: Simulation, C: Redis> {
     id: Uuid,
     manager: Client,
     population: Population<S, C>,
     simulation: S,
 }
 
-impl<S: Simulation, C: Commands> Worker<S, C> {
+impl<S: Simulation, C: Redis> Worker<S, C> {
     pub fn new(addr: &str, conn: C, simulation: S) -> Worker<S, C> {
         Worker {
             id: Uuid::new_v4(),
@@ -287,55 +460,130 @@ impl<S: Simulation, C: Commands> Worker<S, C> {
 
     fn decide(&self) {
         let world = self.population.world();
-        while let Ok(id) = self.population.conn.spop::<&str, String>(TO_DECIDE_KEY) {
-            let id = Uuid::parse_str(&id).unwrap();
-            match self.population.get_agent(id) {
-                Some(agent) => {
-                    let updates = self.simulation.decide(agent, world.clone(), &self.population);
-                    // let mut rpipe = pipe();
-                    // for (id, update) in updates {
-                    //     let data = encode(&update).unwrap();
-                    //     rpipe.lpush(format!("updates:{}", id), data).ignore();
-                    // }
-                    // rpipe.sadd(TO_UPDATE_KEY, id.to_string()).ignore();
-                    // let _: () = rpipe.query(&self.population.conn).unwrap();
-
+        let mut cmd = Cmd::new();
+        let mut to_update: Vec<String> = Vec::new();
+        let mut to_updates: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
+        cmd.arg("SPOP").arg(TO_DECIDE_KEY).arg(THROUGHPUT);
+        loop {
+            let ids = cmd.query(&self.population.conn).unwrap();
+            let agents = self.population.get_agents(ids);
+            let n_agents = agents.len();
+            for agent in agents {
+                let id = agent.id.to_string();
+                let updates = self.simulation.decide(agent, world.clone(), &self.population);
+                if updates.len() > 0 {
+                    // queue updates locally
                     for (id, update) in updates {
+                        let key = format!("updates:{}", id);
                         let data = encode(&update).unwrap();
-                        let _: () =
-                            self.population.conn.lpush(format!("updates:{}", id), data).unwrap();
+                        let mut us = to_updates.entry(key).or_insert(Vec::new());
+                        us.push(data);
                     }
-                    let _: () = self.population.conn.sadd(TO_UPDATE_KEY, id.to_string()).unwrap();
+                    to_update.push(id);
                 }
-                None => (),
             }
+            if n_agents < THROUGHPUT {
+                break;
+            }
+        }
+
+        // push out updates
+        if to_update.len() > 0 {
+            for (key, updates) in to_updates.drain() {
+                let _: () = self.population
+                    .conn
+                    .lpush(key, updates)
+                    .unwrap();
+            }
+            let _: () = self.population.conn.sadd(TO_UPDATE_KEY, to_update).unwrap();
         }
     }
 
     fn update(&self) {
-        while let Ok(id) = self.population.conn.spop::<&str, String>(TO_UPDATE_KEY) {
-            let updates: Vec<S::Update> = {
-                let key = format!("updates:{}", id);
-                let updates_data: Vec<Vec<u8>> = self.population
-                    .conn
-                    .lrange(&key, 0, -1)
-                    .unwrap();
-                let _: () = self.population.conn.del(&key).unwrap();
-                if updates_data.len() == 0 {
-                    Vec::new()
-                } else {
-                    updates_data.iter().map(|data| decode(data.clone()).unwrap()).collect()
-                }
-            };
-            let id = Uuid::parse_str(&id).unwrap();
-            match self.population.get_agent(id) {
-                Some(agent) => {
-                    let new_state = self.simulation.update(agent.state.clone(), updates);
-                    self.population.set_agent(id, new_state);
-                    let _: () = self.population.conn.sadd(TO_DECIDE_KEY, id.to_string()).unwrap();
-                }
-                None => (),
+        let mut cmd = Cmd::new();
+        let mut to_decide: Vec<String> = Vec::new();
+        let mut to_change: Vec<(Uuid, S::State)> = Vec::new();
+        cmd.arg("SPOP").arg(TO_UPDATE_KEY).arg(THROUGHPUT);
+        loop {
+            let ids = cmd.query(&self.population.conn).unwrap();
+            let agents = self.population.get_agents(ids);
+            let n_agents = agents.len();
+            // TODO here we're still making a request per agent to update
+            // is there a way to bulk-fetch updates for multiple agents?
+            for agent in agents {
+                let updates: Vec<S::Update> = {
+                    let key = format!("updates:{}", agent.id);
+                    // TODO see previous note
+                    let updates_data: Vec<Vec<u8>> = self.population
+                        .conn
+                        .lrange(&key, 0, -1)
+                        .unwrap();
+                    if updates_data.len() == 0 {
+                        continue;
+                    } else {
+                        let _: () = self.population.conn.del(&key).unwrap();
+                        updates_data.iter().map(|data| decode(data.clone()).unwrap()).collect()
+                    }
+                };
+                let new_state = self.simulation.update(agent.state.clone(), updates);
+                to_change.push((agent.id, new_state));
+                to_decide.push(agent.id.to_string());
+            }
+            if n_agents < THROUGHPUT {
+                break;
             }
         }
+        if to_decide.len() > 0 {
+            self.population.set_agents(to_change);
+            let _: () = self.population.conn.sadd(TO_DECIDE_KEY, to_decide).unwrap();
+        }
+    }
+}
+
+
+/// Convenience function for running a simulation/manager with a n workers.
+/// This blocks until the simulation is finished running.
+pub fn run<S: Simulation + 'static, R: Redis + 'static>(sim: S,
+                                                        manager: Manager<S, R>,
+                                                        n_workers: usize,
+                                                        n_steps: usize)
+                                                        -> Manager<S, R> {
+
+    let addr = manager.addr.clone();
+    let pop_client = manager.population.conn.clone();
+
+    // run the manager on a separate thread
+    let manager_t = thread::spawn(move || {
+        manager.run(n_steps);
+        manager
+    });
+
+    run_workers(addr.as_ref(), pop_client, sim.clone(), n_workers);
+    manager_t.join().unwrap()
+}
+
+/// Convenience function to run a node of n workers.
+/// This blocks until the workers are done.
+pub fn run_workers<S: Simulation + 'static, R: Redis + 'static>(addr: &str,
+                                                                pop_client: R,
+                                                                sim: S,
+                                                                n_workers: usize) {
+    let addr = addr.to_owned();
+    let worker_ts: Vec<thread::JoinHandle<()>> = (0..n_workers)
+        .map(|_| {
+            // create a worker on a separate thread
+            let addr = addr.clone();
+            let sim = sim.clone();
+            let pop_client = pop_client.clone();
+            thread::spawn(move || {
+                let worker = Worker::new(addr.as_ref(), pop_client, sim);
+                worker.start();
+            })
+        })
+        .collect();
+
+    // block til done running
+    for t in worker_ts {
+        t.join().unwrap();
     }
 }
