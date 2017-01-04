@@ -33,8 +33,18 @@ impl Simulation for MySimulation {
     type Update = MyUpdate;
     type World = MyWorld;
 
-    fn setup<R: Redis>(&self, agent: Agent<Self::State>, population: &Population<Self, R>) -> () {
+    fn on_spawn<R: Redis>(&self,
+                          agent: Agent<Self::State>,
+                          population: &Population<Self, R>)
+                          -> () {
         population.index(agent.state.name.as_ref(), agent.id.clone());
+    }
+
+    fn on_death<R: Redis>(&self,
+                          agent: Agent<Self::State>,
+                          population: &Population<Self, R>)
+                          -> () {
+        population.unindex(agent.state.name.as_ref(), agent.id.clone());
     }
 
     fn decide<R: Redis>(&self,
@@ -138,7 +148,7 @@ fn main() {
     });
 
     // Register a really simple reporter
-    manager.register_reporter(1, |pop, conn| {
+    manager.register_reporter(1, |step, pop, conn| {
         let world = pop.world();
         let _: () = conn.publish("weather", world.weather.clone()).unwrap();
         let _: () = conn.publish("ws", world.weather.clone()).unwrap();

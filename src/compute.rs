@@ -10,8 +10,8 @@ use uuid::Uuid;
 
 use time::PreciseTime;
 
-pub trait Redis: Commands + Send + Clone {}
-impl<T> Redis for T where T: Commands + Send + Clone {}
+pub trait Redis: Commands + Send + Sync + Clone {}
+impl<T> Redis for T where T: Commands + Send + Sync + Clone {}
 
 // use hash tags to ensure these keys hash to the same slot
 const POPULATION_KEY: &'static str = "{pop}population";
@@ -23,7 +23,7 @@ const POP_UPDATES_KEY: &'static str = "{pop}updates";
 // This larger this is, the less network communication with Redis (i.e. reduces overhead).
 // But if you make this too large, the advantage of multiple workers decreases.
 // TODO this should probably be configurable by the end user
-const THROUGHPUT: usize = 100;
+const THROUGHPUT: usize = 500;
 
 fn decode<R: Decodable>(inp: Vec<u8>) -> Result<R, Error> {
     let mut decoder = Decoder::new(&inp[..]);
@@ -35,6 +35,65 @@ fn encode<R: Encodable>(data: R) -> Result<Vec<u8>, io::Error> {
     match data.encode(&mut Encoder::new(&mut buf)) {
         Ok(_) => Ok(buf),
         Err(e) => Err(io::Error::new(io::ErrorKind::Other, format!("{}", e))),
+    }
+}
+
+pub struct Updates<S: Simulation> {
+    updates: HashMap<String, Vec<Vec<u8>>>,
+    pop_updates: Vec<PopulationUpdate<S::State>>,
+}
+
+impl<S: Simulation> Updates<S> {
+    pub fn new() -> Updates<S> {
+        Updates {
+            updates: HashMap::new(),
+            pop_updates: Vec::new(),
+        }
+    }
+
+    pub fn queue(&mut self, id: Uuid, update: S::Update) {
+        let key = format!("updates:{}", id);
+        let data = encode(&update).unwrap();
+        let mut updates = self.updates.entry(key).or_insert(Vec::new());
+        updates.push(data);
+    }
+
+    pub fn queue_world(&mut self, update: S::Update) {
+        let data = encode(&update).unwrap();
+        let mut updates = self.updates.entry("updates:world".to_string()).or_insert(Vec::new());
+        updates.push(data);
+    }
+
+    /// Create a new agent with the specified state, returning the new agent's id.
+    /// This does not actually spawn the agent, it just queues it.
+    /// Run the `update` method to execute it (and other queued updates).
+    pub fn spawn(&mut self, state: S::State) -> Uuid {
+        let id = Uuid::new_v4();
+        let update = PopulationUpdate::Spawn(id, state);
+        self.pop_updates.push(update);
+        id
+    }
+
+    /// Deletes an agent by id.
+    /// This does not actually execute the kill, it just queues it.
+    /// Run the `update` method to execute it (and other queued updates).
+    pub fn kill(&mut self, agent: Agent<S::State>) {
+        let update: PopulationUpdate<S::State> = PopulationUpdate::Kill(agent.id, agent.state);
+        self.pop_updates.push(update);
+    }
+
+    /// Push these local updates to Redis.
+    fn push<R: Redis>(&mut self, pop: &Population<S, R>) {
+        for (key, updates) in self.updates.drain() {
+            let _: () = pop.conn
+                .lpush(key, updates)
+                .unwrap();
+        }
+        if self.pop_updates.len() > 0 {
+            let pop_updates: Vec<Vec<u8>> =
+                self.pop_updates.iter().map(|u| encode(u).unwrap()).collect();
+            let _: () = pop.conn.sadd(POP_UPDATES_KEY, pop_updates).unwrap();
+        }
     }
 }
 
@@ -71,6 +130,7 @@ impl<S: Simulation, C: Redis> Population<S, C> {
         let data = encode(&world).unwrap();
         let _: () = self.conn.set("world", data).unwrap();
     }
+
 
     /// Get an agent by id.
     pub fn get_agent(&self, id: Uuid) -> Option<Agent<S::State>> {
@@ -128,17 +188,6 @@ impl<S: Simulation, C: Redis> Population<S, C> {
         }
     }
 
-    /// Create a new agent with the specified state, returning the new agent's id.
-    /// This does not actually spawn the agent, it just queues it.
-    /// Run the `update` method to execute it (and other queued updates).
-    pub fn spawn(&self, state: S::State) -> Uuid {
-        let id = Uuid::new_v4();
-        let update = PopulationUpdate::Spawn(id, state);
-        let data = encode(&update).unwrap();
-        let _: () = self.conn.sadd(POP_UPDATES_KEY, data).unwrap();
-        id
-    }
-
     fn spawns(&self, to_spawn: Vec<(Uuid, S::State)>) {
         if to_spawn.len() > 0 {
             let ids: Vec<String> = to_spawn.iter().map(|&(id, _)| id.to_string()).collect();
@@ -159,15 +208,6 @@ impl<S: Simulation, C: Redis> Population<S, C> {
         }
     }
 
-    // TODO these should may be bulked too, part of the updates vec
-    /// Deletes an agent by id.
-    /// This does not actually execute the kill, it just queues it.
-    /// Run the `update` method to execute it (and other queued updates).
-    pub fn kill(&self, agent: Agent<S::State>) {
-        let update: PopulationUpdate<S::State> = PopulationUpdate::Kill(agent.id, agent.state);
-        let data = encode(&update).unwrap();
-        let _: () = self.conn.sadd(POP_UPDATES_KEY, data).unwrap();
-    }
 
     fn kills(&self, to_kill: Vec<(Uuid, S::State)>) {
         if to_kill.len() > 0 {
@@ -325,7 +365,7 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
     }
 
     /// Run the simulation for `n_steps`.
-    pub fn run(&self, n_steps: usize) -> () {
+    pub fn run(&self, simulation: S, n_steps: usize) -> () {
         let mut steps = 0;
 
         if self.n_workers() == 0 {
@@ -356,6 +396,14 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
             let _: () = self.conn.del("finished").unwrap();
             let e = PreciseTime::now();
             println!("STEP: decide took: {}", s.to(e));
+
+            // TODO move this to a worker?
+            {
+                let world = self.population.world();
+                let mut queued_updates = Updates::new();
+                simulation.world_decide(world, &self.population, &mut queued_updates);
+                queued_updates.push(&self.population);
+            }
 
             let s = PreciseTime::now();
             let _: () = self.conn.publish("command", "update").unwrap();
@@ -398,6 +446,13 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
     /// Get the number of workers.
     pub fn n_workers(&self) -> usize {
         self.conn.scard::<&str, usize>("workers").unwrap()
+    }
+
+    pub fn spawn(&self, states: Vec<S::State>) -> Vec<Uuid> {
+        let mut updates = Updates::new();
+        let ids = states.iter().map(|s| updates.spawn(s.clone())).collect();
+        updates.push(&self.population);
+        ids
     }
 }
 
@@ -462,26 +517,28 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
         let world = self.population.world();
         let mut cmd = Cmd::new();
         let mut to_update: Vec<String> = Vec::new();
-        let mut to_updates: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
+        let mut queued_updates = Updates::new();
         cmd.arg("SPOP").arg(TO_DECIDE_KEY).arg(THROUGHPUT);
         loop {
+            let start = PreciseTime::now();
             let ids = cmd.query(&self.population.conn).unwrap();
             let agents = self.population.get_agents(ids);
             let n_agents = agents.len();
             for agent in agents {
                 let id = agent.id.to_string();
-                let updates = self.simulation.decide(agent, world.clone(), &self.population);
-                if updates.len() > 0 {
-                    // queue updates locally
-                    for (id, update) in updates {
-                        let key = format!("updates:{}", id);
-                        let data = encode(&update).unwrap();
-                        let mut us = to_updates.entry(key).or_insert(Vec::new());
-                        us.push(data);
-                    }
-                    to_update.push(id);
-                }
+                self.simulation.decide(agent, world.clone(), &self.population, &mut queued_updates);
+                to_update.push(id);
             }
+
+            if n_agents > 0 {
+                let end = PreciseTime::now();
+                let t = start.to(end);
+                println!("\t decide loop took: {}", t);
+                println!("\t\tn agents: {}", n_agents);
+                println!("\t\tper agent: {:.3}",
+                         t.num_milliseconds() as f64 / n_agents as f64);
+            }
+
             if n_agents < THROUGHPUT {
                 break;
             }
@@ -489,12 +546,7 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
 
         // push out updates
         if to_update.len() > 0 {
-            for (key, updates) in to_updates.drain() {
-                let _: () = self.population
-                    .conn
-                    .lpush(key, updates)
-                    .unwrap();
-            }
+            queued_updates.push(&self.population);
             let _: () = self.population.conn.sadd(TO_UPDATE_KEY, to_update).unwrap();
         }
     }
@@ -551,10 +603,11 @@ pub fn run<S: Simulation + 'static, R: Redis + 'static>(sim: S,
 
     let addr = manager.addr.clone();
     let pop_client = manager.population.conn.clone();
+    let sim_m = sim.clone();
 
     // run the manager on a separate thread
     let manager_t = thread::spawn(move || {
-        manager.run(n_steps);
+        manager.run(sim_m, n_steps);
         manager
     });
 

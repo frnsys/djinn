@@ -1,6 +1,6 @@
 use uuid::Uuid;
 use std::fmt::Debug;
-use compute::{Population, Redis};
+use compute::{Population, Redis, Updates};
 use rustc_serialize::{Decodable, Encodable};
 
 pub trait State: Decodable + Encodable + Debug + Send + Sync + Clone + PartialEq {}
@@ -24,7 +24,7 @@ pub struct Agent<S: State> {
 ///    updates themselves are _not_ applied in this phase.
 /// 2. `update`: this is a phase where agents consider queued updates and compute a new state
 ///    accordingly.
-pub trait Simulation: Sized + Send + Clone {
+pub trait Simulation: Sized + Send + Sync + Clone {
     type State: State;
     type World: State;
     type Update: Update;
@@ -47,9 +47,20 @@ pub trait Simulation: Sized + Send + Clone {
     fn decide<R: Redis>(&self,
                         agent: Agent<Self::State>,
                         world: Self::World,
-                        population: &Population<Self, R>)
-                        -> Vec<(Uuid, Self::Update)>;
+                        population: &Population<Self, R>,
+                        updates: &mut Updates<Self>)
+                        -> ();
 
     /// Compute a final updated state given a starting state and updates.
     fn update(&self, state: Self::State, updates: Vec<Self::Update>) -> Self::State;
+
+    /// Compute updates for the world.
+    fn world_decide<R: Redis>(&self,
+                              world: Self::World,
+                              population: &Population<Self, R>,
+                              updates: &mut Updates<Self>)
+                              -> ();
+
+    /// Compute a final state for the world given updates.
+    fn world_update(&self, world: Self::World, updates: Vec<Self::Update>) -> Self::World;
 }
