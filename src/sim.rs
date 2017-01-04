@@ -1,4 +1,3 @@
-use uuid::Uuid;
 use std::fmt::Debug;
 use compute::{Population, Redis, Updates};
 use rustc_serialize::{Decodable, Encodable};
@@ -14,7 +13,7 @@ impl<T> Update for T where T: Decodable + Encodable + Debug + Send + Sync + Clon
 /// Agents are just structures containing a unique id and a state.
 #[derive(RustcDecodable, RustcEncodable, Debug, PartialEq, Clone)]
 pub struct Agent<S: State> {
-    pub id: Uuid,
+    pub id: String,
     pub state: S,
 }
 
