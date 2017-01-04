@@ -450,6 +450,10 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
             let e = PreciseTime::now();
             println!("STEP: pop update took: {}", s.to(e));
 
+            let _: () = self.conn.publish("command", "sync").unwrap();
+            let _: () = self.conn.set("current_phase", "sync").unwrap();
+            self.wait_until_finished();
+
             steps += 1;
 
             let end = PreciseTime::now();
@@ -492,6 +496,7 @@ pub struct Worker<S: Simulation, C: Redis> {
     id: Uuid,
     manager: Client,
     population: Population<S, C>,
+    local: Vec<Agent<S::State>>,
     simulation: S,
 }
 
@@ -502,10 +507,11 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             manager: Client::open(addr).unwrap(),
             population: Population::new(simulation.clone(), conn),
             simulation: simulation,
+            local: Vec::new(),
         }
     }
 
-    pub fn start(&self) {
+    pub fn start(&mut self) {
         // register with the manager
         let _: () = self.manager.sadd("workers", self.id.to_string()).unwrap();
 
@@ -527,7 +533,35 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
         }
     }
 
-    fn process_cmd(&self, cmd: &str) {
+    /// Fetch queued new agents assigned to this worker
+    /// and kills those queued to die.
+    fn sync_population(&mut self) {
+        let key = format!("spawn:{}", self.id);
+        let mut datas: Vec<Vec<u8>> = self.population
+            .conn
+            .lrange(&key, 0, -1)
+            .unwrap();
+        if datas.len() > 0 {
+            let _: () = self.population.conn.del(&key).unwrap();
+            let agents = datas.drain(..).map(|data| decode(data.clone()).unwrap());
+            self.local.extend(agents);
+        }
+
+        let key = format!("kill:{}", self.id);
+        let ids: Vec<String> = self.population
+            .conn
+            .lrange(&key, 0, -1)
+            .unwrap();
+        if ids.len() > 0 {
+            let _: () = self.population.conn.del(&key).unwrap();
+            // TODO maybe self.local should be a hashmap of id->States instead
+            // that way we don't have to iterate over the whole damn thing to kill some agents
+            let local = self.local.drain(..).filter(|a| !ids.contains(&a.id)).collect();
+            self.local = local;
+        }
+    }
+
+    fn process_cmd(&mut self, cmd: &str) {
         match cmd {
             "terminate" => {
                 let _: () = self.manager.srem("workers", self.id.to_string()).unwrap();
@@ -538,6 +572,10 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             }
             "update" => {
                 self.update();
+                let _: () = self.manager.sadd("finished", self.id.to_string()).unwrap();
+            }
+            "sync" => {
+                self.sync_population();
                 let _: () = self.manager.sadd("finished", self.id.to_string()).unwrap();
             }
             "idle" => (),
@@ -575,16 +613,25 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
         }
 
         // push out updates
+        let start = PreciseTime::now();
         queued_updates.push(&self.population);
+        let end = PreciseTime::now();
+        println!("\t\tdecide update push took: {}", start.to(end));
     }
 
     fn update(&self) {
         let mut cmd = Cmd::new();
         let mut to_change: Vec<(String, S::State)> = Vec::new();
         cmd.arg("SPOP").arg(TO_UPDATE_KEY).arg(THROUGHPUT);
+        let mut update_time = 0.0;
+        let mut fetch_time = 0.0;
         loop {
+            let start = PreciseTime::now();
             let ids = cmd.query(&self.population.conn).unwrap();
             let agents = self.population.get_agents(ids);
+            let end = PreciseTime::now();
+            let t = start.to(end);
+            fetch_time += (t.num_milliseconds() as f64) / 1000.0;
             let n_agents = agents.len();
             // TODO here we're still making a request per agent to update
             // is there a way to bulk-fetch updates for multiple agents?
@@ -592,10 +639,14 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
                 let updates: Vec<S::Update> = {
                     let key = format!("updates:{}", agent.id);
                     // TODO see previous note
+                    let start = PreciseTime::now();
                     let updates_data: Vec<Vec<u8>> = self.population
                         .conn
                         .lrange(&key, 0, -1)
                         .unwrap();
+                    let end = PreciseTime::now();
+                    let t = start.to(end);
+                    update_time += (t.num_milliseconds() as f64) / 1000.0;
                     if updates_data.len() == 0 {
                         continue;
                     } else {
@@ -603,14 +654,18 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
                         updates_data.iter().map(|data| decode(data.clone()).unwrap()).collect()
                     }
                 };
-                // let new_state = self.simulation.update(agent.state.clone(), updates);
-                // to_change.push((agent.id, new_state));
-                to_change.push((agent.id, agent.state.clone())); // TEMP TESTING
+
+                let new_state = self.simulation.update(agent.state.clone(), updates);
+                if new_state != agent.state {
+                    to_change.push((agent.id, new_state));
+                }
             }
             if n_agents < THROUGHPUT {
                 break;
             }
         }
+        println!("\tspend time fetching agent datas: {:.3}", fetch_time);
+        println!("\tspend time fetching updates: {:.3}", update_time);
         if to_change.len() > 0 {
             println!("changing: {}", to_change.len());
             self.population.set_agents(to_change);
@@ -655,7 +710,7 @@ pub fn run_workers<S: Simulation + 'static, R: Redis + 'static>(addr: &str,
             let sim = sim.clone();
             let pop_client = pop_client.clone();
             thread::spawn(move || {
-                let worker = Worker::new(addr.as_ref(), pop_client, sim);
+                let mut worker = Worker::new(addr.as_ref(), pop_client, sim);
                 worker.start();
             })
         })
