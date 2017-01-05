@@ -100,8 +100,9 @@ impl<'a, S: Simulation> Updates<'a, S> {
     /// Deletes an agent by id.
     /// This does not actually execute the kill, it just queues it.
     /// Run the `update` method to execute it (and other queued updates).
-    pub fn kill(&mut self, agent: Agent<S::State>) {
-        let update: PopulationUpdate<S::State> = PopulationUpdate::Kill(agent.id, agent.state);
+    pub fn kill(&mut self, agent: &Agent<S::State>) {
+        let update: PopulationUpdate<S::State> = PopulationUpdate::Kill(agent.id.clone(),
+                                                                        agent.state.clone());
         self.pop_updates.push(update);
     }
 
@@ -259,21 +260,29 @@ impl<S: Simulation, C: Redis> Population<S, C> {
             let _: () = self.conn.del(ids.clone()).unwrap();
             let _: () = self.conn.srem(POPULATION_KEY, ids.clone()).unwrap();
 
-            // TODO this needs to submit to proper workers too
-
+            let hasher = self.hasher.as_ref().unwrap();
+            let mut targets: HashMap<usize, Vec<String>> = HashMap::new();
             let agents = to_kill.drain(..)
                 .map(|(id, state)| {
-                    Agent {
-                        id: id,
+                    let a = Agent {
+                        id: id.clone(),
                         state: state,
-                    }
+                    };
+                    targets.entry(hasher.hash(&id))
+                        .or_insert(Vec::new())
+                        .push(id);
+                    a
                 })
                 .collect();
+            for (worker_id, ids) in targets.drain() {
+                let key = format!("kill:{}", worker_id);
+                let _: () = self.conn.lpush(key, ids).unwrap();
+            }
+
             self.simulation.on_deaths(agents, &self);
         }
     }
 
-    // TODO these should be handled by workers too
     /// Process queued updates.
     pub fn update(&self) {
         let mut to_kill = Vec::new();
@@ -470,7 +479,7 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
             {
                 let world = population.world();
                 let mut queued_updates = Updates::new(&hasher);
-                simulation.world_decide(world, &population, &mut queued_updates);
+                simulation.world_decide(&world, &population, &mut queued_updates);
                 queued_updates.push(&population);
             }
 
@@ -590,7 +599,7 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             let _: () = self.population.conn.del(&key).unwrap();
             let agents: Vec<Agent<S::State>> = datas.drain(..)
                 .map(|data| {
-                    let a: Agent<S::State> = decode(data.clone()).unwrap();
+                    let a: Agent<S::State> = decode(data).unwrap();
                     self.local_ids.insert(a.id.clone());
                     a
                 })
@@ -647,15 +656,20 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
     fn decide(&mut self) {
         let world = self.population.world();
         let mut queued_updates = Updates::new(&self.hasher);
+
+        let s = PreciseTime::now();
         for agent in self.local.iter() {
-            self.simulation.decide(agent.clone(), // TODO this should prob just be a ref
-                                   world.clone(),
+            self.simulation.decide(agent, // TODO this should prob just be a ref
+                                   &world,
                                    &self.population,
                                    &mut queued_updates);
         }
+        let e = PreciseTime::now();
+        println!("\tWORKER: decide loop took: {}", s.to(e));
 
         // push out updates
         // first grab local updates
+        let s = PreciseTime::now();
         match queued_updates.updates.remove(&self.id) {
             Some(mut updates) => {
                 for (id, update) in updates.drain(..) {
@@ -665,6 +679,8 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             None => (),
         };
         queued_updates.push(&self.population);
+        let e = PreciseTime::now();
+        println!("\tWORKER: decide update push took: {}", s.to(e));
     }
 
     fn update(&mut self) {

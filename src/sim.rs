@@ -44,8 +44,8 @@ pub trait Simulation: Sized + Send + Sync + Clone {
 
     /// Computes updates for the specified agents and/or other agents.
     fn decide<R: Redis>(&self,
-                        agent: Agent<Self::State>,
-                        world: Self::World,
+                        agent: &Agent<Self::State>,
+                        world: &Self::World,
                         population: &Population<Self, R>,
                         updates: &mut Updates<Self>)
                         -> ();
@@ -55,7 +55,7 @@ pub trait Simulation: Sized + Send + Sync + Clone {
 
     /// Compute updates for the world.
     fn world_decide<R: Redis>(&self,
-                              world: Self::World,
+                              world: &Self::World,
                               population: &Population<Self, R>,
                               updates: &mut Updates<Self>)
                               -> ();
