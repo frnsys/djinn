@@ -13,7 +13,7 @@ impl<T> Update for T where T: Decodable + Encodable + Debug + Send + Sync + Clon
 /// Agents are just structures containing a unique id and a state.
 #[derive(RustcDecodable, RustcEncodable, Debug, PartialEq, Clone)]
 pub struct Agent<S: State> {
-    pub id: String,
+    pub id: u64,
     pub state: S,
 }
 
