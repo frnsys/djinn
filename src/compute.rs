@@ -1,12 +1,10 @@
-use std::thread;
+use uuid::Uuid;
+use std::{thread, time};
 use std::collections::{HashMap, HashSet};
+use redis::{Commands, Client};
 use hash::{WHasher, hash};
 use ser::{decode, encode};
 use sim::{Agent, Simulation, State};
-use redis::{Commands, Client};
-use uuid::Uuid;
-
-use std::time::Duration;
 use time::PreciseTime;
 
 pub trait Redis: Commands + Send + Sync + Clone {}
@@ -14,6 +12,7 @@ impl<T> Redis for T where T: Commands + Send + Sync + Clone {}
 
 const POPULATION_KEY: &'static str = "population";
 const POP_UPDATES_KEY: &'static str = "updates:population";
+const WORLD_UPDATES_KEY: &'static str = "updates:world";
 
 pub struct Updates<'a, S: Simulation> {
     updates: HashMap<usize, Vec<(u64, S::Update)>>,
@@ -77,7 +76,7 @@ impl<'a, S: Simulation> Updates<'a, S> {
         if self.world_updates.len() > 0 {
             let world_updates: Vec<Vec<u8>> =
                 self.world_updates.drain(..).map(|u| encode(u).unwrap()).collect();
-            let _: () = pop.conn.sadd("updates:world", world_updates).unwrap(); // TODO what is on the receiving end of this?
+            let _: () = pop.conn.sadd(WORLD_UPDATES_KEY, world_updates).unwrap();
         }
     }
 }
@@ -210,7 +209,6 @@ impl<S: Simulation, C: Redis> Population<S, C> {
         if to_kill.len() > 0 {
             let ids: Vec<u64> = to_kill.iter().map(|&(id, _)| id).collect();
 
-            // TODO pipeline this? or use set operations?
             let _: () = self.conn.del(ids.clone()).unwrap();
             let _: () = self.conn.srem(POPULATION_KEY, ids.clone()).unwrap();
 
@@ -373,7 +371,7 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
         let mut n_workers = 0;
         while n_workers == 0 {
             println!("Waiting for at least one worker...");
-            let wait = Duration::from_millis(1000);
+            let wait = time::Duration::from_millis(1000);
             thread::sleep(wait);
             n_workers = self.n_workers();
         }
@@ -430,8 +428,8 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
             println!("MANAGER: decide took: {}", s.to(e));
 
             // TODO move this to a worker?
+            let world = population.world();
             {
-                let world = population.world();
                 let mut queued_updates = Updates::new(&hasher);
                 simulation.world_decide(&world, &population, &mut queued_updates);
                 queued_updates.push(&population);
@@ -443,6 +441,22 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
             let _: () = self.conn.del("finished").unwrap();
             let e = PreciseTime::now();
             println!("MANAGER: update took: {}", s.to(e));
+
+            // update world
+            let s = PreciseTime::now();
+            {
+                let mut datas =
+                    self.conn.smembers::<&str, Vec<Vec<u8>>>(WORLD_UPDATES_KEY).unwrap();
+                let _: () = self.conn.del(WORLD_UPDATES_KEY).unwrap();
+
+                let updates: Vec<S::Update> =
+                    datas.drain(..).map(|data| decode(data).unwrap()).collect();
+                let world = simulation.world_update(world, updates);
+                population.set_world(world);
+            }
+            let e = PreciseTime::now();
+            println!("WORLD update took: {}", s.to(e));
+
             steps += 1;
 
             let end = PreciseTime::now();

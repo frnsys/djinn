@@ -51,6 +51,7 @@ pub trait Simulation: Sized + Send + Sync + Clone {
                         -> ();
 
     /// Compute a final updated state given a starting state and updates.
+    /// If there is some update you want to do every step, things will run faster if you implement it here.
     fn update(&self, state: Self::State, updates: Vec<Self::Update>) -> Self::State;
 
     /// Compute updates for the world.
