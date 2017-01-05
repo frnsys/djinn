@@ -568,6 +568,7 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             .unwrap();
         if ids.len() > 0 {
             let _: () = self.population.conn.del(&key).unwrap();
+            // TODO finish implementing this
             // TODO maybe self.local should be a hashmap of id->States instead
             // that way we don't have to iterate over the whole damn thing to kill some agents
             // let local = self.local
@@ -602,7 +603,6 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
                 self.sync_population();
                 let _: () = self.manager.sadd("finished", self.id.to_string()).unwrap();
             }
-            "idle" => (),
             s => println!("Unrecognized command: {}", s),
         }
     }
@@ -610,13 +610,9 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
     fn decide(&mut self) {
         let world = self.population.world();
         let mut queued_updates = Updates::new(&self.hasher);
-
         let s = PreciseTime::now();
         for agent in self.local.iter() {
-            self.simulation.decide(agent, // TODO this should prob just be a ref
-                                   &world,
-                                   &self.population,
-                                   &mut queued_updates);
+            self.simulation.decide(agent, &world, &self.population, &mut queued_updates);
         }
         let e = PreciseTime::now();
         println!("\tWORKER: decide loop took: {}", s.to(e));

@@ -31,14 +31,14 @@ pub trait Simulation: Sized + Send + Sync + Clone {
     /// Called whenever a new agent is spawned.
     /// You can use this to, for example, build an index of agents by state values.
     fn on_spawns<R: Redis>(&self,
-                           agent: Vec<Agent<Self::State>>,
+                           agents: Vec<Agent<Self::State>>,
                            population: &Population<Self, R>)
                            -> ();
 
     /// Called whenever an agent is killed.
     /// You can use this to, for example, remove an agent from an index.
     fn on_deaths<R: Redis>(&self,
-                           agent: Vec<Agent<Self::State>>,
+                           agents: Vec<Agent<Self::State>>,
                            population: &Population<Self, R>)
                            -> ();
 
