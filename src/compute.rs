@@ -493,7 +493,7 @@ pub struct Worker<S: Simulation, C: Redis> {
     uid: Uuid,
     manager: Client,
     population: Population<S, C>,
-    local: Vec<Agent<S::State>>,
+    local: HashMap<u64, Agent<S::State>>,
     local_ids: HashSet<u64>,
     updates: HashMap<u64, Vec<S::Update>>,
     simulation: S,
@@ -508,7 +508,7 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             manager: Client::open(addr).unwrap(),
             population: Population::new(simulation.clone(), conn),
             simulation: simulation,
-            local: Vec::new(),
+            local: HashMap::new(),
             local_ids: HashSet::new(),
             updates: HashMap::new(),
             hasher: WHasher::new(0),
@@ -565,38 +565,28 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             .unwrap();
         if datas.len() > 0 {
             let _: () = self.population.conn.del(&key).unwrap();
-            let agents: Vec<Agent<S::State>> = datas.drain(..)
+            let _: Vec<()> = datas.drain(..)
                 .map(|data| {
                     let a: Agent<S::State> = decode(data).unwrap();
                     self.local_ids.insert(a.id);
-                    a
+                    self.local.insert(a.id, a);
                 })
                 .collect();
-            self.local.extend(agents);
         }
 
         let key = format!("kill:{}", self.id);
-        let ids: Vec<String> = self.population
+        let mut ids: Vec<u64> = self.population
             .conn
             .lrange(&key, 0, -1)
             .unwrap();
         if ids.len() > 0 {
             let _: () = self.population.conn.del(&key).unwrap();
-            // TODO finish implementing this
-            // TODO maybe self.local should be a hashmap of id->States instead
-            // that way we don't have to iterate over the whole damn thing to kill some agents
-            // let local = self.local
-            //     .drain(..)
-            //     .filter(|a| {
-            //         let keep = !ids.contains(&a.id);
-            //         if !keep {
-            //             self.local_ids.remove(&a.id);
-            //         }
-            //         keep
-            //     })
-            //     .collect();
-            // self.local = local;
-            // TODO remove from self.local_ids
+            let _: Vec<()> = ids.drain(..)
+                .map(|id| {
+                    self.local.remove(&id);
+                    self.local_ids.remove(&id);
+                })
+                .collect();
         }
     }
 
@@ -625,7 +615,7 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
         let world = self.population.world();
         let mut queued_updates = Updates::new(&self.hasher);
         let s = PreciseTime::now();
-        for agent in self.local.iter() {
+        for (id, agent) in self.local.iter() {
             self.simulation.decide(agent, &world, &self.population, &mut queued_updates);
         }
         let e = PreciseTime::now();
@@ -663,7 +653,7 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             self.updates.entry(id).or_insert(Vec::new()).push(update);
         }
 
-        for agent in self.local.iter() {
+        for (id, agent) in self.local.iter() {
             let updates = match self.updates.remove(&agent.id) {
                 Some(updates) => updates,
                 None => continue,
