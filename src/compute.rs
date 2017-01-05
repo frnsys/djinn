@@ -1,13 +1,10 @@
-use std::{io, thread};
+use std::thread;
 use std::collections::{HashMap, HashSet};
-use rmp_serialize::decode::Error;
-use rmp_serialize::{Encoder, Decoder};
-use rustc_serialize::{Encodable, Decodable};
+use hash::WHasher;
+use ser::{decode, encode};
 use sim::{Agent, Simulation, State};
 use redis::{Commands, Client};
 use uuid::Uuid;
-use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
 
 use std::time::Duration;
 use time::PreciseTime;
@@ -17,49 +14,6 @@ impl<T> Redis for T where T: Commands + Send + Sync + Clone {}
 
 const POPULATION_KEY: &'static str = "population";
 const POP_UPDATES_KEY: &'static str = "updates:population";
-
-fn decode<R: Decodable>(inp: Vec<u8>) -> Result<R, Error> {
-    let mut decoder = Decoder::new(&inp[..]);
-    Decodable::decode(&mut decoder)
-}
-
-fn encode<R: Encodable>(data: R) -> Result<Vec<u8>, io::Error> {
-    let mut buf = Vec::<u8>::new();
-    match data.encode(&mut Encoder::new(&mut buf)) {
-        Ok(_) => Ok(buf),
-        Err(e) => Err(io::Error::new(io::ErrorKind::Other, format!("{}", e))),
-    }
-}
-
-fn hash<T: Hash>(t: &T) -> u64 {
-    let mut s = DefaultHasher::new();
-    t.hash(&mut s);
-    s.finish()
-}
-
-#[derive(Clone)]
-pub struct WHasher {
-    n_workers: usize,
-}
-
-impl WHasher {
-    pub fn new(n_workers: usize) -> WHasher {
-        WHasher { n_workers: n_workers }
-    }
-
-    /// Hashes an id to a value in the range of `n_workers`.
-    pub fn hash(&self, id: &String) -> usize {
-        let w = self.n_workers as f64;
-        let h = hash(id);
-        let p = (h as f64) / (u64::max_value() as f64);
-        for j in 0..self.n_workers {
-            if (j as f64) / w <= p && ((j + 1) as f64) / w > p {
-                return j;
-            }
-        }
-        self.n_workers - 1
-    }
-}
 
 pub struct Updates<'a, S: Simulation> {
     updates: HashMap<usize, Vec<(String, S::Update)>>,
@@ -222,7 +176,7 @@ impl<S: Simulation, C: Redis> Population<S, C> {
         }
     }
 
-    fn spawns(&self, mut to_spawn: Vec<(String, S::State)>) {
+    fn spawns(&self, to_spawn: Vec<(String, S::State)>) {
         if to_spawn.len() > 0 {
             let ids: Vec<String> = to_spawn.iter().map(|&(ref id, _)| id.clone()).collect();
             let _: () = self.conn.sadd(POPULATION_KEY, ids.clone()).unwrap();
@@ -714,7 +668,6 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
         }
     }
 }
-
 
 /// Convenience function for running a simulation/manager with a n workers.
 /// This blocks until the simulation is finished running.

@@ -7,6 +7,8 @@ extern crate rmp_serialize;
 extern crate time;
 
 mod sim;
+mod ser;
+mod hash;
 mod event;
 mod compute;
 
