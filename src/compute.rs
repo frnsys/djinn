@@ -62,7 +62,7 @@ impl<'a, S: Simulation> Updates<'a, S> {
     /// Push these local updates to Redis.
     fn push<R: Redis>(&mut self, pop: &Population<S, R>) {
         for (worker_id, mut updates) in self.updates.drain() {
-            let key = format!("update:{}", worker_id);
+            let key = format!("updates:{}", worker_id);
             let encoded: Vec<Vec<u8>> = updates.drain(..).map(|u| encode(&u).unwrap()).collect();
             let _: () = pop.conn
                 .lpush(key, encoded)
@@ -337,13 +337,13 @@ pub struct Manager<S: Simulation, C: Redis> {
     conn: Client,
     reporters: HashMap<usize, Box<Fn(usize, &Population<S, C>, &Client) -> () + Send>>,
     pub population: Population<S, C>,
+    initial_pop: Vec<Vec<u8>>,
 }
 
 impl<S: Simulation, C: Redis> Manager<S, C> {
-    pub fn new(addr: &str, conn: C, simulation: S, world: S::World) -> Manager<S, C> {
+    pub fn new(addr: &str, conn: C, simulation: S) -> Manager<S, C> {
         let population = Population::new(simulation, conn);
         population.reset();
-        population.set_world(world);
 
         // conn for commanding workers
         let client = Client::open(addr).unwrap();
@@ -353,6 +353,7 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
             population: population,
             reporters: HashMap::new(),
             conn: client,
+            initial_pop: Vec::new(),
         };
         m.reset();
         m
@@ -366,7 +367,7 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
     }
 
     /// Run the simulation for `n_steps`.
-    pub fn run(&self, simulation: S, states: Vec<S::State>, n_steps: usize) -> () {
+    pub fn run(&self, simulation: S, world: S::World, n_steps: usize) -> () {
         let mut steps = 0;
         let mut n_workers = 0;
         while n_workers == 0 {
@@ -384,13 +385,13 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
         let hasher = WHasher::new(n_workers);
         let mut population = self.population.clone();
         population.hasher = Some(hasher.clone());
+        population.set_world(world);
 
-        // spawn initial population
-        {
-            let mut updates = Updates::new(&hasher);
-            let _: Vec<u64> = states.iter().map(|s| updates.spawn(s.clone())).collect();
-            updates.push(&population);
-        }
+        // push initial population
+        let _: () = self.population
+            .conn
+            .sadd(POP_UPDATES_KEY, self.initial_pop.clone())
+            .unwrap();
 
         // tell workers we're starting
         let _: () = self.conn.publish("command", "start").unwrap();
@@ -480,6 +481,15 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
     fn wait_until_finished(&self) {
         while self.conn.scard::<&str, usize>("finished").unwrap() != self.n_workers() {
         }
+    }
+
+    pub fn spawn(&mut self, state: S::State) -> u64 {
+        let id = hash(&Uuid::new_v4().to_string());
+        let update = PopulationUpdate::Spawn(id, state);
+        let data = encode(update).unwrap();
+        self.initial_pop.push(data);
+        id
+
     }
 
     /// Get the number of workers.
@@ -660,10 +670,13 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             };
             let new_state = self.simulation.update(agent.state.clone(), updates);
             if new_state != agent.state {
-                to_change.push((agent.id, new_state));
+                to_change.push((agent.id, new_state.clone()));
             };
         }
         if to_change.len() > 0 {
+            for &(id, ref state) in to_change.iter() {
+                self.local.get_mut(&id).unwrap().state = state.clone();
+            }
             self.population.set_agents(to_change);
         }
     }
@@ -672,8 +685,8 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
 /// Convenience function for running a simulation/manager with a n workers.
 /// This blocks until the simulation is finished running.
 pub fn run<S: Simulation + 'static, R: Redis + 'static>(sim: S,
+                                                        world: S::World,
                                                         manager: Manager<S, R>,
-                                                        states: Vec<S::State>,
                                                         n_workers: usize,
                                                         n_steps: usize)
                                                         -> Manager<S, R> {
@@ -684,7 +697,7 @@ pub fn run<S: Simulation + 'static, R: Redis + 'static>(sim: S,
 
     // run the manager on a separate thread
     let manager_t = thread::spawn(move || {
-        manager.run(sim_m, states, n_steps);
+        manager.run(sim_m, world, n_steps);
         manager
     });
 
