@@ -1,7 +1,7 @@
 use uuid::Uuid;
 use std::{thread, time};
 use std::collections::{HashMap, HashSet};
-use redis::{Commands, Client};
+use redis::{Commands, Client, Connection, PubSub};
 use hash::{WHasher, hash};
 use ser::{decode, encode};
 use sim::{Agent, Simulation, State};
@@ -334,8 +334,8 @@ impl<S: Simulation, C: Redis> Population<S, C> {
 
 pub struct Manager<S: Simulation, C: Redis> {
     addr: String,
-    conn: Client,
-    reporters: HashMap<usize, Box<Fn(usize, &Population<S, C>, &Client) -> () + Send>>,
+    conn: Connection,
+    reporters: HashMap<usize, Box<Fn(usize, &Population<S, C>, &Connection) -> () + Send>>,
     pub population: Population<S, C>,
     initial_pop: Vec<Vec<u8>>,
 }
@@ -352,7 +352,7 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
             addr: addr.to_owned(),
             population: population,
             reporters: HashMap::new(),
-            conn: client,
+            conn: client.get_connection().unwrap(),
             initial_pop: Vec::new(),
         };
         m.reset();
@@ -473,7 +473,7 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
     /// compute aggregate statistics, etc, and a Redis connection
     /// that can be used, for example, to send reports via pubsub.
     pub fn register_reporter<F>(&mut self, n_steps: usize, func: F) -> ()
-        where F: Fn(usize, &Population<S, C>, &Client) -> () + Send + 'static
+        where F: Fn(usize, &Population<S, C>, &Connection) -> () + Send + 'static
     {
         self.reporters.insert(n_steps, Box::new(func));
     }
@@ -501,27 +501,30 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
 pub struct Worker<S: Simulation, C: Redis> {
     id: usize,
     uid: Uuid,
-    manager: Client,
+    manager: Connection,
     population: Population<S, C>,
     local: HashMap<u64, Agent<S::State>>,
     local_ids: HashSet<u64>,
     updates: HashMap<u64, Vec<S::Update>>,
+    pubsub: PubSub,
     simulation: S,
     hasher: WHasher,
 }
 
 impl<S: Simulation, C: Redis> Worker<S, C> {
     pub fn new(addr: &str, conn: C, simulation: S) -> Worker<S, C> {
+        let client = Client::open(addr).unwrap();
         Worker {
             id: 0,
             uid: Uuid::new_v4(),
-            manager: Client::open(addr).unwrap(),
+            manager: client.get_connection().unwrap(),
             population: Population::new(simulation.clone(), conn),
             simulation: simulation,
             local: HashMap::new(),
             local_ids: HashSet::new(),
             updates: HashMap::new(),
             hasher: WHasher::new(0),
+            pubsub: client.get_pubsub().unwrap(),
         }
     }
 
@@ -530,8 +533,7 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
         let _: () = self.manager.sadd("workers", self.uid.to_string()).unwrap();
 
         // subscribe to the command channel
-        let mut pubsub = self.manager.get_pubsub().unwrap();
-        pubsub.subscribe("command").unwrap();
+        self.pubsub.subscribe("command").unwrap();
 
         // each iteration of this loop is one simulation run
         'outer: loop {
@@ -543,7 +545,7 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             // wait til we get the go-ahead from the manager
             let mut started = false;
             while !started {
-                let msg = pubsub.get_message().unwrap();
+                let msg = self.pubsub.get_message().unwrap();
                 let payload: String = msg.get_payload().unwrap();
                 started = payload == "start";
             }
@@ -555,7 +557,7 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             self.population.hasher = Some(self.hasher.clone());
 
             'inner: loop {
-                let msg = pubsub.get_message().unwrap();
+                let msg = self.pubsub.get_message().unwrap();
                 let payload: String = msg.get_payload().unwrap();
                 self.process_cmd(payload.as_ref());
                 if payload == "terminate" {
