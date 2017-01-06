@@ -399,34 +399,21 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
         while steps < n_steps {
             let start = PreciseTime::now();
 
-            // pre-step
-            let s = PreciseTime::now();
-            population.update();
-            let e = PreciseTime::now();
-            println!("MANAGER: pop update took: {}", s.to(e));
-
-            let s = PreciseTime::now();
             population.update();
             let _: () = self.conn.publish("command", "sync").unwrap();
             self.wait_until_finished();
             let _: () = self.conn.del("finished").unwrap();
-            let e = PreciseTime::now();
-            println!("MANAGER: sync took: {}", s.to(e));
 
             // run any registered reporters, if appropriate
-            println!("starting step");
             for (interval, reporter) in self.reporters.iter() {
                 if steps % interval == 0 {
                     reporter(steps, &population, &self.conn);
                 }
             }
 
-            let s = PreciseTime::now();
             let _: () = self.conn.publish("command", "decide").unwrap();
             self.wait_until_finished();
             let _: () = self.conn.del("finished").unwrap();
-            let e = PreciseTime::now();
-            println!("MANAGER: decide took: {}", s.to(e));
 
             // TODO move this to a worker?
             let world = population.world();
@@ -436,15 +423,12 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
                 queued_updates.push(&population);
             }
 
-            let s = PreciseTime::now();
             let _: () = self.conn.publish("command", "update").unwrap();
             self.wait_until_finished();
             let _: () = self.conn.del("finished").unwrap();
-            let e = PreciseTime::now();
-            println!("MANAGER: update took: {}", s.to(e));
 
             // update world
-            let s = PreciseTime::now();
+            // TODO move this to a worker?
             {
                 let mut datas =
                     self.conn.smembers::<&str, Vec<Vec<u8>>>(WORLD_UPDATES_KEY).unwrap();
@@ -455,8 +439,6 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
                 let world = simulation.world_update(world, updates);
                 population.set_world(world);
             }
-            let e = PreciseTime::now();
-            println!("WORLD update took: {}", s.to(e));
 
             steps += 1;
 
@@ -626,16 +608,12 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
     fn decide(&mut self) {
         let world = self.population.world();
         let mut queued_updates = Updates::new(&self.hasher);
-        let s = PreciseTime::now();
         for (id, agent) in self.local.iter() {
             self.simulation.decide(agent, &world, &self.population, &mut queued_updates);
         }
-        let e = PreciseTime::now();
-        println!("\tWORKER: decide loop took: {}", s.to(e));
 
         // push out updates
         // first grab local updates
-        let s = PreciseTime::now();
         match queued_updates.updates.remove(&self.id) {
             Some(mut updates) => {
                 for (id, update) in updates.drain(..) {
@@ -645,8 +623,6 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             None => (),
         };
         queued_updates.push(&self.population);
-        let e = PreciseTime::now();
-        println!("\tWORKER: decide update push took: {}", s.to(e));
     }
 
     fn update(&mut self) {
