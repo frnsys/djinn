@@ -33,7 +33,7 @@ impl<'a, S: Simulation> Updates<'a, S> {
 
     pub fn queue(&mut self, id: u64, update: S::Update) {
         let worker_id = self.hasher.hash(id);
-        self.updates.entry(worker_id).or_insert(Vec::new()).push((id, update));
+        self.updates.entry(worker_id).or_insert_with(Vec::new).push((id, update));
     }
 
     pub fn queue_world(&mut self, update: S::Update) {
@@ -68,12 +68,12 @@ impl<'a, S: Simulation> Updates<'a, S> {
                 .lpush(key, encoded)
                 .unwrap();
         }
-        if self.pop_updates.len() > 0 {
+        if !self.pop_updates.is_empty() {
             let pop_updates: Vec<Vec<u8>> =
                 self.pop_updates.drain(..).map(|u| encode(u).unwrap()).collect();
             let _: () = pop.conn.sadd(POP_UPDATES_KEY, pop_updates).unwrap();
         }
-        if self.world_updates.len() > 0 {
+        if !self.world_updates.is_empty() {
             let world_updates: Vec<Vec<u8>> =
                 self.world_updates.drain(..).map(|u| encode(u).unwrap()).collect();
             let _: () = pop.conn.sadd(WORLD_UPDATES_KEY, world_updates).unwrap();
@@ -138,7 +138,7 @@ impl<S: Simulation, C: Redis> Population<S, C> {
             let id = ids[0];
             let agent = self.get_agent(id).unwrap();
             vec![agent]
-        } else if ids.len() > 0 {
+        } else if !ids.is_empty() {
             let datas = self.conn.get::<Vec<u64>, Vec<Vec<u8>>>(ids.clone()).unwrap();
             ids.iter()
                 .zip(datas.iter())
@@ -167,7 +167,7 @@ impl<S: Simulation, C: Redis> Population<S, C> {
         if updates.len() == 1 {
             let (id, state) = updates.pop().unwrap();
             self.set_agent(id, state);
-        } else if updates.len() > 0 {
+        } else if !updates.is_empty() {
             let encoded: Vec<(u64, Vec<u8>)> = updates.drain(..)
                 .map(|(id, state)| (id, encode(&state).unwrap()))
                 .collect();
@@ -176,7 +176,7 @@ impl<S: Simulation, C: Redis> Population<S, C> {
     }
 
     fn spawns(&self, to_spawn: Vec<(u64, S::State)>) {
-        if to_spawn.len() > 0 {
+        if !to_spawn.is_empty() {
             let ids: Vec<u64> = to_spawn.iter().map(|&(id, _)| id).collect();
             let _: () = self.conn.sadd(POPULATION_KEY, ids.clone()).unwrap();
 
@@ -190,7 +190,7 @@ impl<S: Simulation, C: Redis> Population<S, C> {
                         state: state.clone(),
                     };
                     targets.entry(hasher.hash(id))
-                        .or_insert(Vec::new())
+                        .or_insert_with(Vec::new)
                         .push(encode(&a).unwrap());
                     a
                 })
@@ -206,7 +206,7 @@ impl<S: Simulation, C: Redis> Population<S, C> {
     }
 
     fn kills(&self, mut to_kill: Vec<(u64, S::State)>) {
-        if to_kill.len() > 0 {
+        if !to_kill.is_empty() {
             let ids: Vec<u64> = to_kill.iter().map(|&(id, _)| id).collect();
 
             let _: () = self.conn.del(ids.clone()).unwrap();
@@ -221,7 +221,7 @@ impl<S: Simulation, C: Redis> Population<S, C> {
                         state: state,
                     };
                     targets.entry(hasher.hash(id))
-                        .or_insert(Vec::new())
+                        .or_insert_with(Vec::new)
                         .push(id);
                     a
                 })
@@ -298,7 +298,7 @@ impl<S: Simulation, C: Redis> Population<S, C> {
 
     /// Add agents (ids) to an index.
     pub fn indexes(&self, index: &str, ids: Vec<u64>) {
-        if ids.len() > 0 {
+        if !ids.is_empty() {
             let _: () = self.conn.sadd(format!("idx:{}", index), ids).unwrap();
         }
     }
@@ -310,7 +310,7 @@ impl<S: Simulation, C: Redis> Population<S, C> {
 
     /// Remove an agent (id) from an index.
     pub fn unindexes(&self, index: &str, ids: Vec<u64>) {
-        if ids.len() > 0 {
+        if !ids.is_empty() {
             let _: () = self.conn.srem(format!("idx:{}", index), ids).unwrap();
         }
     }
@@ -318,7 +318,7 @@ impl<S: Simulation, C: Redis> Population<S, C> {
     /// Reset indices.
     pub fn reset_indices(&self) {
         let keys: Vec<String> = self.conn.keys("idx:*").unwrap();
-        if keys.len() > 0 {
+        if !keys.is_empty() {
             let _: () = self.conn.del(keys).unwrap();
         }
     }
@@ -405,7 +405,7 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
             let _: () = self.conn.del("finished").unwrap();
 
             // run any registered reporters, if appropriate
-            for (interval, reporter) in self.reporters.iter() {
+            for (interval, reporter) in &self.reporters {
                 if steps % interval == 0 {
                     reporter(steps, &population, &self.conn);
                 }
@@ -557,7 +557,7 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             .conn
             .lrange(&key, 0, -1)
             .unwrap();
-        if datas.len() > 0 {
+        if !datas.is_empty() {
             let _: () = self.population.conn.del(&key).unwrap();
             let _: Vec<()> = datas.drain(..)
                 .map(|data| {
@@ -573,7 +573,7 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             .conn
             .lrange(&key, 0, -1)
             .unwrap();
-        if ids.len() > 0 {
+        if !ids.is_empty() {
             let _: () = self.population.conn.del(&key).unwrap();
             let _: Vec<()> = ids.drain(..)
                 .map(|id| {
@@ -608,7 +608,7 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
     fn decide(&mut self) {
         let world = self.population.world();
         let mut queued_updates = Updates::new(&self.hasher);
-        for (id, agent) in self.local.iter() {
+        for agent in self.local.values() {
             self.simulation.decide(agent, &world, &self.population, &mut queued_updates);
         }
 
@@ -617,7 +617,7 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
         match queued_updates.updates.remove(&self.id) {
             Some(mut updates) => {
                 for (id, update) in updates.drain(..) {
-                    self.updates.entry(id).or_insert(Vec::new()).push(update);
+                    self.updates.entry(id).or_insert_with(Vec::new).push(update);
                 }
             }
             None => (),
@@ -638,21 +638,21 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
 
         for data in remote_updates.drain(..) {
             let (id, update) = decode(data).unwrap();
-            self.updates.entry(id).or_insert(Vec::new()).push(update);
+            self.updates.entry(id).or_insert_with(Vec::new).push(update);
         }
 
-        for (id, agent) in self.local.iter() {
+        for agent in self.local.values() {
             let updates = match self.updates.remove(&agent.id) {
                 Some(updates) => updates,
                 None => continue,
             };
             let new_state = self.simulation.update(agent.state.clone(), updates);
             if new_state != agent.state {
-                to_change.push((agent.id, new_state.clone()));
+                to_change.push((agent.id, new_state));
             };
         }
-        if to_change.len() > 0 {
-            for &(id, ref state) in to_change.iter() {
+        if !to_change.is_empty() {
+            for &(id, ref state) in &to_change {
                 self.local.get_mut(&id).unwrap().state = state.clone();
             }
             self.population.set_agents(to_change);
