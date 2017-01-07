@@ -141,11 +141,11 @@ impl<S: Simulation, C: Redis> Population<S, C> {
         } else if !ids.is_empty() {
             let datas = self.conn.get::<Vec<u64>, Vec<Vec<u8>>>(ids.clone()).unwrap();
             ids.iter()
-                .zip(datas.iter())
+                .zip(datas)
                 .map(|(id, data)| {
                     Agent {
                         id: *id,
-                        state: decode(data.clone()).unwrap(),
+                        state: decode(data).unwrap(),
                     }
                 })
                 .collect()
@@ -155,21 +155,21 @@ impl<S: Simulation, C: Redis> Population<S, C> {
     }
 
     /// Set an agent state by id.
-    pub fn set_agent(&self, id: u64, state: S::State) {
-        let data = encode(&state).unwrap();
+    pub fn set_agent(&self, id: u64, state: &S::State) {
+        let data = encode(state).unwrap();
         let _: () = self.conn.set(id, data).unwrap();
     }
 
     /// Set multple agent states by ids.
     /// If you need to update multiple agents, you should use this as it makes only one network
     /// request.
-    pub fn set_agents(&self, mut updates: Vec<(u64, S::State)>) {
+    pub fn set_agents(&self, updates: &Vec<(u64, S::State)>) {
         if updates.len() == 1 {
-            let (id, state) = updates.pop().unwrap();
+            let (id, ref state) = updates[0];
             self.set_agent(id, state);
         } else if !updates.is_empty() {
-            let encoded: Vec<(u64, Vec<u8>)> = updates.drain(..)
-                .map(|(id, state)| (id, encode(&state).unwrap()))
+            let encoded: Vec<(u64, Vec<u8>)> = updates.iter()
+                .map(|&(id, ref state)| (id, encode(state).unwrap()))
                 .collect();
             let _: () = self.conn.set_multiple(encoded.as_slice()).unwrap();
         }
@@ -178,7 +178,7 @@ impl<S: Simulation, C: Redis> Population<S, C> {
     fn spawns(&self, to_spawn: Vec<(u64, S::State)>) {
         if !to_spawn.is_empty() {
             let ids: Vec<u64> = to_spawn.iter().map(|&(id, _)| id).collect();
-            let _: () = self.conn.sadd(POPULATION_KEY, ids.clone()).unwrap();
+            let _: () = self.conn.sadd(POPULATION_KEY, ids).unwrap();
 
             // map the workers we need to send new agents to
             let hasher = self.hasher.as_ref().unwrap();
@@ -195,7 +195,7 @@ impl<S: Simulation, C: Redis> Population<S, C> {
                     a
                 })
                 .collect();
-            self.set_agents(to_spawn);
+            self.set_agents(&to_spawn);
 
             for (worker_id, agents) in targets.drain() {
                 let key = format!("spawn:{}", worker_id);
@@ -652,10 +652,10 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             };
         }
         if !to_change.is_empty() {
-            for &(id, ref state) in &to_change {
-                self.local.get_mut(&id).unwrap().state = state.clone();
+            self.population.set_agents(&to_change);
+            for (id, state) in to_change.drain(..) {
+                self.local.get_mut(&id).unwrap().state = state;
             }
-            self.population.set_agents(to_change);
         }
     }
 }
