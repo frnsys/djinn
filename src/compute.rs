@@ -1,11 +1,11 @@
 use uuid::Uuid;
 use std::{thread, time};
-use std::collections::{HashMap, HashSet};
 use redis::{Commands, Client, Connection, PubSub};
 use hash::{WHasher, hash};
 use ser::{decode, encode};
 use sim::{Agent, Simulation, State};
 use time::PreciseTime;
+use fnv::{FnvHashMap, FnvHashSet};
 
 pub trait Redis: Commands + Send + Sync + Clone {}
 impl<T> Redis for T where T: Commands + Send + Sync + Clone {}
@@ -15,7 +15,7 @@ const POP_UPDATES_KEY: &'static str = "updates:population";
 const WORLD_UPDATES_KEY: &'static str = "updates:world";
 
 pub struct Updates<'a, S: Simulation> {
-    updates: HashMap<usize, Vec<(u64, S::Update)>>,
+    updates: FnvHashMap<usize, Vec<(u64, S::Update)>>,
     world_updates: Vec<S::Update>,
     pop_updates: Vec<PopulationUpdate<S::State>>,
     hasher: &'a WHasher,
@@ -24,7 +24,7 @@ pub struct Updates<'a, S: Simulation> {
 impl<'a, S: Simulation> Updates<'a, S> {
     pub fn new(hasher: &WHasher) -> Updates<S> {
         Updates {
-            updates: HashMap::new(),
+            updates: FnvHashMap::default(),
             world_updates: Vec::new(),
             pop_updates: Vec::new(),
             hasher: hasher,
@@ -182,7 +182,7 @@ impl<S: Simulation, C: Redis> Population<S, C> {
 
             // map the workers we need to send new agents to
             let hasher = self.hasher.as_ref().unwrap();
-            let mut targets: HashMap<usize, Vec<Vec<u8>>> = HashMap::new();
+            let mut targets: FnvHashMap<usize, Vec<Vec<u8>>> = FnvHashMap::default();
             let agents = to_spawn.iter()
                 .map(|&(id, ref state)| {
                     let a = Agent {
@@ -213,7 +213,7 @@ impl<S: Simulation, C: Redis> Population<S, C> {
             let _: () = self.conn.srem(POPULATION_KEY, ids.clone()).unwrap();
 
             let hasher = self.hasher.as_ref().unwrap();
-            let mut targets: HashMap<usize, Vec<u64>> = HashMap::new();
+            let mut targets: FnvHashMap<usize, Vec<u64>> = FnvHashMap::default();
             let agents = to_kill.drain(..)
                 .map(|(id, state)| {
                     let a = Agent {
@@ -335,7 +335,7 @@ impl<S: Simulation, C: Redis> Population<S, C> {
 pub struct Manager<S: Simulation, C: Redis> {
     addr: String,
     conn: Connection,
-    reporters: HashMap<usize, Box<Fn(usize, &Population<S, C>, &Connection) -> () + Send>>,
+    reporters: FnvHashMap<usize, Box<Fn(usize, &Population<S, C>, &Connection) -> () + Send>>,
     pub population: Population<S, C>,
     initial_pop: Vec<Vec<u8>>,
 }
@@ -351,7 +351,7 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
         let m = Manager {
             addr: addr.to_owned(),
             population: population,
-            reporters: HashMap::new(),
+            reporters: FnvHashMap::default(),
             conn: client.get_connection().unwrap(),
             initial_pop: Vec::new(),
         };
@@ -485,9 +485,9 @@ pub struct Worker<S: Simulation, C: Redis> {
     uid: Uuid,
     manager: Connection,
     population: Population<S, C>,
-    local: HashMap<u64, Agent<S::State>>,
-    local_ids: HashSet<u64>,
-    updates: HashMap<u64, Vec<S::Update>>,
+    local: FnvHashMap<u64, Agent<S::State>>,
+    local_ids: FnvHashSet<u64>,
+    updates: FnvHashMap<u64, Vec<S::Update>>,
     pubsub: PubSub,
     simulation: S,
     hasher: WHasher,
@@ -502,9 +502,9 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             manager: client.get_connection().unwrap(),
             population: Population::new(simulation.clone(), conn),
             simulation: simulation,
-            local: HashMap::new(),
-            local_ids: HashSet::new(),
-            updates: HashMap::new(),
+            local: FnvHashMap::default(),
+            local_ids: FnvHashSet::default(),
+            updates: FnvHashMap::default(),
             hasher: WHasher::new(0),
             pubsub: client.get_pubsub().unwrap(),
         }

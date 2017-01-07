@@ -12,6 +12,7 @@ ws = "*"
 uuid = { version = "0.2", features = ["v4", "rustc-serialize"] }
 cpython = { git = "https://github.com/dgrunwald/rust-cpython.git" }
 time = "*"
+fnv = "*"
 
 [dev-dependencies]
 time = "*"

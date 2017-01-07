@@ -3,6 +3,7 @@ extern crate uuid;
 extern crate redis;
 extern crate rustc_serialize;
 extern crate rmp_serialize;
+extern crate fnv;
 
 extern crate time;
 
