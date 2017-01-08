@@ -5,7 +5,7 @@ use hash::{WHasher, hash};
 use ser::{decode, encode};
 use sim::{Agent, Simulation, State};
 use time::PreciseTime;
-use fnv::{FnvHashMap, FnvHashSet};
+use fnv::FnvHashMap;
 
 pub trait Redis: Commands + Send + Sync + Clone {}
 impl<T> Redis for T where T: Commands + Send + Sync + Clone {}
@@ -486,7 +486,6 @@ pub struct Worker<S: Simulation, C: Redis> {
     manager: Connection,
     population: Population<S, C>,
     local: FnvHashMap<u64, Agent<S::State>>,
-    local_ids: FnvHashSet<u64>,
     updates: FnvHashMap<u64, Vec<S::Update>>,
     pubsub: PubSub,
     simulation: S,
@@ -503,7 +502,6 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             population: Population::new(simulation.clone(), conn),
             simulation: simulation,
             local: FnvHashMap::default(),
-            local_ids: FnvHashSet::default(),
             updates: FnvHashMap::default(),
             hasher: WHasher::new(0),
             pubsub: client.get_pubsub().unwrap(),
@@ -521,7 +519,6 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
         'outer: loop {
             // reset
             self.local.clear();
-            self.local_ids.clear();
             self.updates.clear();
 
             // wait til we get the go-ahead from the manager
@@ -562,7 +559,6 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             let _: Vec<()> = datas.drain(..)
                 .map(|data| {
                     let a: Agent<S::State> = decode(data).unwrap();
-                    self.local_ids.insert(a.id);
                     self.local.insert(a.id, a);
                 })
                 .collect();
@@ -578,7 +574,6 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             let _: Vec<()> = ids.drain(..)
                 .map(|id| {
                     self.local.remove(&id);
-                    self.local_ids.remove(&id);
                 })
                 .collect();
         }
