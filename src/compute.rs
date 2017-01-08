@@ -547,54 +547,50 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
     }
 
     /// Fetch queued new agents assigned to this worker
-    /// and kills those queued to die.
+    /// and kill those queued to die.
     fn sync_population(&mut self) {
         let key = format!("spawn:{}", self.id);
-        let mut datas: Vec<Vec<u8>> = self.population
+        let datas: Vec<Vec<u8>> = self.population
             .conn
             .lrange(&key, 0, -1)
             .unwrap();
         if !datas.is_empty() {
             let _: () = self.population.conn.del(&key).unwrap();
-            let _: Vec<()> = datas.drain(..)
-                .map(|data| {
-                    let a: Agent<S::State> = decode(data).unwrap();
-                    self.local.insert(a.id, a);
-                })
-                .collect();
+            for data in datas {
+                let a: Agent<S::State> = decode(data).unwrap();
+                self.local.insert(a.id, a);
+            }
         }
 
         let key = format!("kill:{}", self.id);
-        let mut ids: Vec<u64> = self.population
+        let ids: Vec<u64> = self.population
             .conn
             .lrange(&key, 0, -1)
             .unwrap();
         if !ids.is_empty() {
             let _: () = self.population.conn.del(&key).unwrap();
-            let _: Vec<()> = ids.drain(..)
-                .map(|id| {
-                    self.local.remove(&id);
-                })
-                .collect();
+            for id in ids {
+                self.local.remove(&id);
+            }
         }
     }
 
     fn process_cmd(&mut self, cmd: &str) {
         match cmd {
             "terminate" => {
-                let _: () = self.manager.srem("workers", self.id.to_string()).unwrap();
+                let _: () = self.manager.srem("workers", self.uid.to_string()).unwrap();
             }
             "decide" => {
                 self.decide();
-                let _: () = self.manager.sadd("finished", self.id.to_string()).unwrap();
+                let _: () = self.manager.sadd("finished", self.id).unwrap();
             }
             "update" => {
                 self.update();
-                let _: () = self.manager.sadd("finished", self.id.to_string()).unwrap();
+                let _: () = self.manager.sadd("finished", self.id).unwrap();
             }
             "sync" => {
                 self.sync_population();
-                let _: () = self.manager.sadd("finished", self.id.to_string()).unwrap();
+                let _: () = self.manager.sadd("finished", self.id).unwrap();
             }
             s => println!("Unrecognized command: {}", s),
         }
@@ -610,8 +606,8 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
         // push out updates
         // first grab local updates
         match queued_updates.updates.remove(&self.id) {
-            Some(mut updates) => {
-                for (id, update) in updates.drain(..) {
+            Some(updates) => {
+                for (id, update) in updates {
                     self.updates.entry(id).or_insert_with(Vec::new).push(update);
                 }
             }
@@ -625,13 +621,13 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
 
         // get updates queued by other workers
         let key = format!("updates:{}", self.id);
-        let mut remote_updates: Vec<Vec<u8>> = self.population
+        let remote_updates: Vec<Vec<u8>> = self.population
             .conn
             .lrange(&key, 0, -1)
             .unwrap();
         let _: () = self.population.conn.del(&key).unwrap();
 
-        for data in remote_updates.drain(..) {
+        for data in remote_updates {
             let (id, update) = decode(data).unwrap();
             self.updates.entry(id).or_insert_with(Vec::new).push(update);
         }
@@ -648,7 +644,7 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
         }
         if !to_change.is_empty() {
             self.population.set_agents(&to_change);
-            for (id, state) in to_change.drain(..) {
+            for (id, state) in to_change {
                 self.local.get_mut(&id).unwrap().state = state;
             }
         }
