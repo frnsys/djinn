@@ -137,7 +137,7 @@ impl Simulation for Sim {
             // move
             if c.resources <= 0 {
                 // random adjacent cell
-                let mut rng = rand::thread_rng();
+                let mut rng = rand::weak_rng();
 
                 let x: isize = if rng.gen::<f64>() < 0.5 {
                     cmp::min(s.pos.x + 1, self.width - 1) as isize
@@ -161,15 +161,19 @@ impl Simulation for Sim {
         }
     }
 
-    fn update(&self, mut state: Self::State, updates: Vec<Self::Update>) -> Self::State {
+    fn update(&self, mut state: &mut Self::State, updates: Vec<Self::Update>) -> bool {
+        let old_resources = state.resources;
+        let mut changed = false;
         for update in updates {
             match update {
                 // assuming each agent makes only one move per step
                 Update::MoveTo(pos) => {
                     state.pos = pos;
+                    changed = true;
                 }
                 Update::GiveResource(amt) => {
                     state.resources += amt;
+                    changed = true;
                 }
                 _ => (),
             }
@@ -180,7 +184,7 @@ impl Simulation for Sim {
         } else {
             state.resources -= self.resource_to_live;
         }
-        state
+        changed || state.resources != old_resources
     }
 
     fn world_decide<R: Redis>(&self,
@@ -190,7 +194,7 @@ impl Simulation for Sim {
                               -> () {
         let mut to_drain = Vec::new();
         let mut to_replenish = Vec::new();
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::weak_rng();
         let _: Vec<()> = world.cells
             .iter()
             .map(|(pos, c)| {
@@ -243,10 +247,16 @@ impl Simulation for Sim {
 
 fn main() {
     let sim = Sim {
+        // FOR TESTING
+        // p_replenishment: 1.,
+        // birth_threshold: 0,
+        // resource_per_cell: 1,
+        // resource_to_live: 0,
+        // start_resources: 1,
         p_replenishment: 0.8,
         birth_threshold: 10,
         resource_per_cell: 6,
-        resource_to_live: 1,
+        resource_to_live: 6,
         start_resources: 10,
         height: 20,
         width: 20,

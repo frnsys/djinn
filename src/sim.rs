@@ -52,7 +52,7 @@ pub trait Simulation: Sized + Send + Sync + Clone {
 
     /// Compute a final updated state given a starting state and updates.
     /// If there is some update you want to do every step, things will run faster if you implement it here.
-    fn update(&self, state: Self::State, updates: Vec<Self::Update>) -> Self::State;
+    fn update(&self, state: &mut Self::State, updates: Vec<Self::Update>) -> bool;
 
     /// Compute updates for the world.
     fn world_decide<R: Redis>(&self,

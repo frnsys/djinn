@@ -14,15 +14,15 @@ const POPULATION_KEY: &'static str = "population";
 const POP_UPDATES_KEY: &'static str = "updates:population";
 const WORLD_UPDATES_KEY: &'static str = "updates:world";
 
-pub struct Updates<'a, S: Simulation> {
+pub struct Updates<S: Simulation> {
     updates: FnvHashMap<usize, Vec<(u64, S::Update)>>,
     world_updates: Vec<S::Update>,
     pop_updates: Vec<PopulationUpdate<S::State>>,
-    hasher: &'a WHasher,
+    hasher: WHasher,
 }
 
-impl<'a, S: Simulation> Updates<'a, S> {
-    pub fn new(hasher: &WHasher) -> Updates<S> {
+impl<S: Simulation> Updates<S> {
+    pub fn new(hasher: WHasher) -> Updates<S> {
         Updates {
             updates: FnvHashMap::default(),
             world_updates: Vec::new(),
@@ -59,6 +59,12 @@ impl<'a, S: Simulation> Updates<'a, S> {
         self.pop_updates.push(update);
     }
 
+    fn clear(&mut self) {
+        self.world_updates.clear();
+        self.updates.clear();
+        self.pop_updates.clear();
+    }
+
     /// Push these local updates to Redis.
     fn push<R: Redis>(&mut self, pop: &Population<S, R>) {
         for (worker_id, mut updates) in self.updates.drain() {
@@ -78,6 +84,7 @@ impl<'a, S: Simulation> Updates<'a, S> {
                 self.world_updates.drain(..).map(|u| encode(u).unwrap()).collect();
             let _: () = pop.conn.sadd(WORLD_UPDATES_KEY, world_updates).unwrap();
         }
+        self.clear();
     }
 }
 
@@ -163,7 +170,7 @@ impl<S: Simulation, C: Redis> Population<S, C> {
     /// Set multple agent states by ids.
     /// If you need to update multiple agents, you should use this as it makes only one network
     /// request.
-    pub fn set_agents(&self, updates: &Vec<(u64, S::State)>) {
+    pub fn set_agents(&self, updates: &Vec<(u64, &S::State)>) {
         if updates.len() == 1 {
             let (id, ref state) = updates[0];
             self.set_agent(id, state);
@@ -195,9 +202,10 @@ impl<S: Simulation, C: Redis> Population<S, C> {
                     a
                 })
                 .collect();
-            self.set_agents(&to_spawn);
+            let to_spawn_ref = to_spawn.iter().map(|&(id, ref state)| (id, state)).collect(); // TODO there is likely a way to do this differently?
+            self.set_agents(&to_spawn_ref);
 
-            for (worker_id, agents) in targets.drain() {
+            for (worker_id, agents) in targets {
                 let key = format!("spawn:{}", worker_id);
                 let _: () = self.conn.lpush(key, agents).unwrap();
             }
@@ -396,6 +404,7 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
         // tell workers we're starting
         let _: () = self.conn.publish("command", "start").unwrap();
 
+        let mut queued_updates = Updates::new(hasher.clone());
         while steps < n_steps {
             let start = PreciseTime::now();
 
@@ -415,10 +424,10 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
             self.wait_until_finished();
             let _: () = self.conn.del("finished").unwrap();
 
+
             // TODO move this to a worker?
             let world = population.world();
             {
-                let mut queued_updates = Updates::new(&hasher);
                 simulation.world_decide(&world, &population, &mut queued_updates);
                 queued_updates.push(&population);
             }
@@ -489,12 +498,13 @@ pub struct Worker<S: Simulation, C: Redis> {
     updates: FnvHashMap<u64, Vec<S::Update>>,
     pubsub: PubSub,
     simulation: S,
-    hasher: WHasher,
+    queued_updates: Updates<S>
 }
 
 impl<S: Simulation, C: Redis> Worker<S, C> {
     pub fn new(addr: &str, conn: C, simulation: S) -> Worker<S, C> {
         let client = Client::open(addr).unwrap();
+        let hasher = WHasher::new(0);
         Worker {
             id: 0,
             uid: Uuid::new_v4(),
@@ -503,8 +513,8 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             simulation: simulation,
             local: FnvHashMap::default(),
             updates: FnvHashMap::default(),
-            hasher: WHasher::new(0),
             pubsub: client.get_pubsub().unwrap(),
+            queued_updates: Updates::new(hasher)
         }
     }
 
@@ -532,8 +542,8 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             // get an id
             self.id = self.manager.lpop("worker_ids").unwrap();
             let n_workers = self.manager.scard::<&str, usize>("workers").unwrap();
-            self.hasher = WHasher::new(n_workers);
-            self.population.hasher = Some(self.hasher.clone());
+            self.queued_updates.hasher = WHasher::new(n_workers);
+            self.population.hasher = Some(self.queued_updates.hasher.clone());
 
             'inner: loop {
                 let msg = self.pubsub.get_message().unwrap();
@@ -598,14 +608,13 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
 
     fn decide(&mut self) {
         let world = self.population.world();
-        let mut queued_updates = Updates::new(&self.hasher);
         for agent in self.local.values() {
-            self.simulation.decide(agent, &world, &self.population, &mut queued_updates);
+            self.simulation.decide(agent, &world, &self.population, &mut self.queued_updates);
         }
 
         // push out updates
         // first grab local updates
-        match queued_updates.updates.remove(&self.id) {
+        match self.queued_updates.updates.remove(&self.id) {
             Some(updates) => {
                 for (id, update) in updates {
                     self.updates.entry(id).or_insert_with(Vec::new).push(update);
@@ -613,11 +622,11 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             }
             None => (),
         };
-        queued_updates.push(&self.population);
+        self.queued_updates.push(&self.population);
     }
 
     fn update(&mut self) {
-        let mut to_change: Vec<(u64, S::State)> = Vec::new();
+        let mut to_change: Vec<(u64, &S::State)> = Vec::with_capacity(self.local.len());
 
         // get updates queued by other workers
         let key = format!("updates:{}", self.id);
@@ -632,21 +641,18 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             self.updates.entry(id).or_insert_with(Vec::new).push(update);
         }
 
-        for agent in self.local.values() {
-            let updates = match self.updates.remove(&agent.id) {
-                Some(updates) => updates,
+        for agent in self.local.values_mut() {
+            let updates = match self.updates.get_mut(&agent.id) {
+                Some(updates) => updates.drain(..).collect(),
                 None => continue,
             };
-            let new_state = self.simulation.update(agent.state.clone(), updates);
-            if new_state != agent.state {
-                to_change.push((agent.id, new_state));
+            let changed = self.simulation.update(&mut agent.state, updates);
+            if changed {
+                to_change.push((agent.id, &agent.state));
             };
         }
         if !to_change.is_empty() {
             self.population.set_agents(&to_change);
-            for (id, state) in to_change {
-                self.local.get_mut(&id).unwrap().state = state;
-            }
         }
     }
 }
