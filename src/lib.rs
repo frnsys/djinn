@@ -13,7 +13,7 @@ mod ser;
 mod hash;
 mod event;
 mod compute;
-mod ext;
+pub mod ext;
 
 pub use event::WebSocketServer;
 pub use sim::{Agent, Update, State, Simulation};
