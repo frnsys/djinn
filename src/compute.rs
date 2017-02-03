@@ -498,7 +498,7 @@ pub struct Worker<S: Simulation, C: Redis> {
     updates: FnvHashMap<u64, Vec<S::Update>>,
     pubsub: PubSub,
     simulation: S,
-    queued_updates: Updates<S>
+    queued_updates: Updates<S>,
 }
 
 impl<S: Simulation, C: Redis> Worker<S, C> {
@@ -514,7 +514,7 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
             local: FnvHashMap::default(),
             updates: FnvHashMap::default(),
             pubsub: client.get_pubsub().unwrap(),
-            queued_updates: Updates::new(hasher)
+            queued_updates: Updates::new(hasher),
         }
     }
 
