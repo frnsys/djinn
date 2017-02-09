@@ -284,6 +284,7 @@ impl<S: Simulation, C: Redis> Population<S, C> {
             _ => {
                 ids.drain(..)
                     .map(|id| {
+                        // TODO must be a bulk way of doing this?
                         let state_data = self.conn.get(id).unwrap();
                         Agent {
                             id: id,
@@ -293,6 +294,23 @@ impl<S: Simulation, C: Redis> Population<S, C> {
                     .collect()
             }
         }
+    }
+
+    /// Select a random agent from an index.
+    pub fn random(&self, index: &str) -> Agent<S::State> {
+        let id: u64 = self.conn.srandmember(format!("idx:{}", index)).unwrap();
+        let state_data: Vec<u8> = self.conn.get(id).unwrap();
+        Agent {
+            id: id,
+            state: decode(state_data).unwrap(),
+        }
+    }
+
+    /// Select random agents from an index.
+    pub fn randoms(&self, index: &str, count: usize) -> Vec<Agent<S::State>> {
+        let ids: Vec<u64> =
+            self.conn.srandmember_multiple(format!("idx:{}", index), count).unwrap();
+        self.get_agents(ids)
     }
 
     pub fn count_index(&self, index: &str) -> usize {
@@ -480,7 +498,11 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
         let data = encode(update).unwrap();
         self.initial_pop.push(data);
         id
+    }
 
+    /// Spawn multiple agents at once.
+    pub fn spawns(&mut self, mut states: Vec<S::State>) -> Vec<u64> {
+        states.drain(..).map(|s| self.spawn(s)).collect()
     }
 
     /// Get the number of workers.
