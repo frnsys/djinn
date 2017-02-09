@@ -81,27 +81,24 @@ pub trait QLearner {
 
 /// Update Q-value for last taken action.
 fn learn<S: State, A: Action>(params: &mut QLearnerParams<S, A>, state: &S, reward: f64) -> () {
-     match params.prev {
-         Some(ref prev) => {
-             let &(ref p_state, ref p_action) = prev;
-             let val = {
-                 let actions_values =
-                     params.q.entry(p_state.clone()).or_insert_with(HashMap::new);
-                 *actions_values.entry(p_action.clone()).or_insert(0.)
-             };
-             let best_next_val = match params.q.get(state) {
-                 Some(ars) => {
-                     // ugghhh
-                     *ars.values().max_by(|&f1, &f2| f1.partial_cmp(f2).unwrap()).unwrap()
-                 }
-                 None => 0.0,
-             };
-             let mut actions_values = params.q.get_mut(&p_state).unwrap();
-             let new_val = params.learning_rate *
-                           (reward + params.discount * best_next_val) -
-                           val;
-             actions_values.insert(p_action.clone(), new_val);
-         }
-         None => (),
-     }
+    match params.prev {
+        Some(ref prev) => {
+            let &(ref p_state, ref p_action) = prev;
+            let val = {
+                let actions_values = params.q.entry(p_state.clone()).or_insert_with(HashMap::new);
+                *actions_values.entry(p_action.clone()).or_insert(0.)
+            };
+            let best_next_val = match params.q.get(state) {
+                Some(ars) => {
+                    // ugghhh
+                    *ars.values().max_by(|&f1, &f2| f1.partial_cmp(f2).unwrap()).unwrap()
+                }
+                None => 0.0,
+            };
+            let mut actions_values = params.q.get_mut(&p_state).unwrap();
+            let new_val = params.learning_rate * (reward + params.discount * best_next_val) - val;
+            actions_values.insert(p_action.clone(), new_val);
+        }
+        None => (),
+    }
 }
