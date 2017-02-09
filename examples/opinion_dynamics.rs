@@ -43,14 +43,14 @@ impl Person {
         }
     }
 
-    /// Select a random opinion weighted by priority.
+    /// Select a random opinion weighted by personal priority.
     fn rand_opinion_idx(&self, mut rng: &mut Rng, opinions: &Vec<Opinion>) -> usize {
         let mut items: Vec<Weighted<usize>> = opinions.iter()
             .enumerate()
             .map(|(i, o)| {
                 Weighted {
                     item: i,
-                    weight: o.priority,
+                    weight: self.opinions[i].priority,
                 }
             })
             .collect();
@@ -141,11 +141,7 @@ enum PersonUpdate {
 
 #[derive(RustcDecodable, RustcEncodable, Debug, PartialEq, Clone)]
 enum MediaUpdate {
-    OpinionShift {
-        idx: usize,
-        polarity: i32,
-        priority: i32,
-    },
+    Click { idx: usize, polarity: i32 },
 }
 
 #[derive(RustcDecodable, RustcEncodable, Debug, PartialEq, Clone)]
@@ -163,6 +159,15 @@ struct World {
 struct OpinionDynamicsSim;
 
 impl OpinionDynamicsSim {
+    fn decide_media<R: Redis>(&self,
+                              id: u64,
+                              media: &Media,
+                              pop: &Population<Self, R>,
+                              updates: &mut Updates<Self>)
+                              -> () {
+        // media's not really doing anything atm
+    }
+
     fn decide_person<R: Redis>(&self,
                                id: u64,
                                person: &Person,
@@ -222,6 +227,13 @@ impl OpinionDynamicsSim {
                 let ref op1 = person.opinions[op_idx];
                 let ref op2 = m.opinions[op_idx];
 
+                // "click" on the story
+                updates.queue(other.id,
+                              Update::Media(MediaUpdate::Click {
+                                  idx: op_idx,
+                                  polarity: op1.polarity,
+                              }));
+
                 // naively bootstrap trust for new media as 0
                 let trust = match person.medias.get(&other.id) {
                     Some(t) => *t,
@@ -252,6 +264,7 @@ impl OpinionDynamicsSim {
                         PersonUpdate::OpinionShift { idx, polarity } => {
                             let ref mut op = person.opinions[idx];
                             op.polarity += polarity;
+                            updated = true;
                         }
                         PersonUpdate::TrustShift { id, shift, edge_type } => {
                             match edge_type {
@@ -264,6 +277,29 @@ impl OpinionDynamicsSim {
                                     person.medias.insert(id, (trust + shift) as u32);
                                 }
                             }
+                            updated = true;
+                        }
+                    }
+                }
+                _ => (),
+            }
+        }
+        updated
+    }
+
+    fn update_media(&self, mut media: &mut Media, updates: Vec<Update>) -> bool {
+        let mut updated = false;
+        for update in updates {
+            match update {
+                Update::Media(u) => {
+                    match u {
+                        MediaUpdate::Click { idx, polarity } => {
+                            let ref mut op = media.opinions[idx];
+                            let diff = polarity - op.polarity;
+                            op.polarity += ((polarity as f64) * OPINION_SHIFT_PROPORTION)
+                                .round() as i32;
+                            op.priority += 1;
+                            updated = true;
                         }
                     }
                 }
@@ -290,14 +326,16 @@ impl Simulation for OpinionDynamicsSim {
                 self.decide_person(agent.id, p, pop, updates);
             }
             State::Media(ref m) => {
-                // TODO
+                self.decide_media(agent.id, m, pop, updates);
             }
         }
     }
 
     fn update(&self, mut state: &mut Self::State, updates: Vec<Self::Update>) -> bool {
-        // TODO
-        false
+        match *state {
+            State::Person(ref mut p) => self.update_person(p, updates),
+            State::Media(ref mut m) => self.update_media(m, updates),
+        }
     }
 
     fn on_spawns<R: Redis>(&self,
