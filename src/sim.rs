@@ -33,14 +33,16 @@ pub trait Simulation: Sized + Send + Sync + Clone {
     fn on_spawns<R: Redis>(&self,
                            agents: Vec<Agent<Self::State>>,
                            population: &Population<Self, R>)
-                           -> ();
+                           -> () {
+    }
 
     /// Called whenever an agent is killed.
     /// You can use this to, for example, remove an agent from an index.
     fn on_deaths<R: Redis>(&self,
                            agents: Vec<Agent<Self::State>>,
                            population: &Population<Self, R>)
-                           -> ();
+                           -> () {
+    }
 
     /// Computes updates for the specified agents and/or other agents.
     fn decide<R: Redis>(&self,
@@ -59,8 +61,11 @@ pub trait Simulation: Sized + Send + Sync + Clone {
                               world: &Self::World,
                               population: &Population<Self, R>,
                               updates: &mut Updates<Self>)
-                              -> ();
+                              -> () {
+    }
 
     /// Compute a final state for the world given updates.
-    fn world_update(&self, world: Self::World, updates: Vec<Self::Update>) -> Self::World;
+    fn world_update(&self, world: Self::World, updates: Vec<Self::Update>) -> Self::World {
+        world
+    }
 }
