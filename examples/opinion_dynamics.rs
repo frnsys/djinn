@@ -7,34 +7,109 @@ use rand::Rng;
 use redis::Client;
 use djinn::{Agent, Manager, Simulation, Population, Updates, Redis, run};
 use rand::distributions::{Weighted, WeightedChoice, IndependentSample};
+use std::collections::HashMap;
+
+// when two people share the exact same polarity on an opinion,
+// this is how much their trust improves by
+const MAX_POS_TRUST_SHIFT: f64 = 1.;
+
+// if two people have a polarity within +/- this value,
+// their trust improves
+const MAX_POS_TRUST_SHIFT_RANGE: f64 = 4.;
+
+// when an opinion shifts, it shifts by this proportion of
+// the opinion difference
+const OPINION_SHIFT_PROPORTION: f64 = 0.1;
 
 #[derive(RustcDecodable, RustcEncodable, Debug, PartialEq, Clone)]
 struct Opinion {
-    polarity: f64,
-    priority: f64,
+    polarity: i32,
+    priority: u32,
 }
 
 #[derive(RustcDecodable, RustcEncodable, Debug, PartialEq, Clone)]
 struct Person {
     opinions: Vec<Opinion>,
-    medias: Vec<Edge>,
-    friends: Vec<Edge>,
+    medias: HashMap<u64, u32>,
+    friends: HashMap<u64, u32>,
 }
 
 impl Person {
     pub fn new(opinions: Vec<Opinion>) -> Person {
         Person {
             opinions: opinions,
-            medias: Vec::new(),
-            friends: Vec::new(),
+            medias: HashMap::new(),
+            friends: HashMap::new(),
         }
     }
-}
 
-#[derive(RustcDecodable, RustcEncodable, Debug, PartialEq, Clone)]
-struct Edge {
-    to: u64,
-    weight: u32,
+    /// Select a random opinion weighted by priority.
+    fn rand_opinion_idx(&self, mut rng: &mut Rng, opinions: &Vec<Opinion>) -> usize {
+        let mut items: Vec<Weighted<usize>> = opinions.iter()
+            .enumerate()
+            .map(|(i, o)| {
+                Weighted {
+                    item: i,
+                    weight: o.priority,
+                }
+            })
+            .collect();
+        let wc = WeightedChoice::new(&mut items);
+        wc.ind_sample(&mut rng).clone()
+    }
+
+    /// Select a random edge by weight.
+    fn rand_edge(&self, mut rng: &mut Rng, edges: &HashMap<u64, u32>) -> u64 {
+        let mut items: Vec<Weighted<u64>> = edges.iter()
+            .map(|(id, weight)| {
+                Weighted {
+                    item: *id,
+                    weight: *weight,
+                }
+            })
+            .collect();
+        let wc = WeightedChoice::new(&mut items);
+        wc.ind_sample(&mut rng)
+    }
+
+    /// Trust is computed from alignment of opinion polarities,
+    /// weighted by the importance/priority of those opinions
+    /// from the perspective of the subject.
+    fn trust_from_opinions(&self, opinions: &Vec<Opinion>) -> u32 {
+        self.opinions
+            .iter()
+            .zip(opinions.iter())
+            .fold(0, |acc, (o1, o2)| acc + self.trust_from_opinion(o1, o2))
+    }
+
+    fn trust_from_opinion(&self, o1: &Opinion, o2: &Opinion) -> u32 {
+        let dist = (o1.polarity - o2.polarity).abs();
+        let x = ((2 - dist) as f64) / 1.;
+        ((x - 1.) * (o1.priority as f64)).round() as u32
+    }
+
+    /// TODO atm only considering a shift _towards_ the other person's opinion,
+    /// but totally possible that encountering a divergent opinion
+    /// causes one to double-down on their own opinion.
+    /// TODO atm this is only a one-way exchange, totally possible to influence the
+    /// other person's opinion too.
+    fn be_influenced(&self, op_idx: usize, op1: &Opinion, op2: &Opinion) -> PersonUpdate {
+        let diff = op2.polarity - op1.polarity;
+        let shift = ((diff as f64) * OPINION_SHIFT_PROPORTION).round() as i32;
+        PersonUpdate::OpinionShift {
+            idx: op_idx,
+            polarity: shift,
+        }
+    }
+
+    /// Based on hearing this person's opinion, adjust trust.
+    /// The lower distance between their opinions, the more they trust each other.
+    fn trust_shift(&self, op1: &Opinion, op2: &Opinion) -> i32 {
+        let dist = (op1.polarity - op2.polarity).abs();
+        let trust_shift = -((dist as f64) / MAX_POS_TRUST_SHIFT_RANGE).powi(2) +
+                          MAX_POS_TRUST_SHIFT;
+        trust_shift.round() as i32
+    }
 }
 
 #[derive(RustcDecodable, RustcEncodable, Debug, PartialEq, Clone)]
@@ -56,26 +131,20 @@ enum State {
 
 #[derive(RustcDecodable, RustcEncodable, Debug, PartialEq, Clone)]
 enum PersonUpdate {
-    OpinionShift {
-        idx: usize,
-        polarity: f64,
-        priority: f64,
-    },
+    OpinionShift { idx: usize, polarity: i32 },
     TrustShift {
         id: u64,
-        shift: f64,
+        shift: i32,
         edgeType: EdgeType,
     },
-    Meet { id: u64, trust: f64 },
-    Discover { id: u64, trust: f64 },
 }
 
 #[derive(RustcDecodable, RustcEncodable, Debug, PartialEq, Clone)]
 enum MediaUpdate {
     OpinionShift {
         idx: usize,
-        polarity: f64,
-        priority: f64,
+        polarity: i32,
+        priority: i32,
     },
 }
 
@@ -103,64 +172,74 @@ impl OpinionDynamicsSim {
         let mut rng = rand::weak_rng();
 
         // talk to a person or consume media?
-        if rng.gen::<f64>() < 0.5 {
+        let other = if rng.gen::<f64>() < 0.5 {
             // choose a media.
             // the less media this person is familiar with,
             // the more likely they will encounter a random one.
             // otherwise, they choose one with probability based on how much they trust it.
             let p_rand_media = (person.medias.len() as f64) / 2.; // TODO denom should be a config val
-            let media = if rng.gen::<f64>() < p_rand_media {
-                let m = pop.random("media");
-
-                // create an edge
-                // TODO check if already has edge to this one
-                updates.queue(id,
-                              Update::Person(PersonUpdate::Discover {
-                                  id: id,
-                                  trust: 0., // TODO bootstrap trust in some way
-                              }));
-                m
+            if rng.gen::<f64>() < p_rand_media {
+                pop.random("media")
             } else {
-                let mut items: Vec<Weighted<u64>> = person.medias
-                    .iter()
-                    .map(|e| {
-                        Weighted {
-                            item: e.to,
-                            weight: e.weight,
-                        }
-                    })
-                    .collect();
-                let wc = WeightedChoice::new(&mut items);
-                let id = wc.ind_sample(&mut rng);
+                let id = person.rand_edge(&mut rng, &person.medias);
                 pop.get_agent(id).unwrap()
-            };
+            }
         } else {
             // choose a person to talk to.
             let p_rand_person = (person.friends.len() as f64) / 2.; // TODO denom should be a config val
-            let person = if rng.gen::<f64>() < p_rand_person {
-                let p = pop.random("person"); // TODO prob shouldnt be themselves
-                // create an edge
-                // TODO check if already has edge to this one
-                updates.queue(id,
-                              Update::Person(PersonUpdate::Meet {
-                                  id: id,
-                                  trust: 0., // TODO bootstrap trust in some way
-                              }));
-                p
+            if rng.gen::<f64>() < p_rand_person {
+                pop.random("person") // TODO prob shouldnt be themselves
             } else {
-                let mut items: Vec<Weighted<u64>> = person.friends
-                    .iter()
-                    .map(|e| {
-                        Weighted {
-                            item: e.to,
-                            weight: e.weight,
-                        }
-                    })
-                    .collect();
-                let wc = WeightedChoice::new(&mut items);
-                let id = wc.ind_sample(&mut rng);
+                let id = person.rand_edge(&mut rng, &person.friends);
                 pop.get_agent(id).unwrap()
-            };
+            }
+        };
+        match other.state {
+            State::Person(ref p) => {
+                let op_idx = person.rand_opinion_idx(&mut rng, &p.opinions);
+                let ref op1 = person.opinions[op_idx];
+                let ref op2 = p.opinions[op_idx];
+
+                // naively bootstrap trust for new person as 0
+                let trust = match person.friends.get(&other.id) {
+                    Some(t) => *t,
+                    None => 0,
+                };
+                let p_opinion_shift = ((trust as f64) + 0.01) / 100.;
+                if rng.gen::<f64>() < p_opinion_shift {
+                    updates.queue(id, Update::Person(person.be_influenced(op_idx, op1, op2)));
+                }
+
+                updates.queue(id,
+                              Update::Person(PersonUpdate::TrustShift {
+                                  id: other.id,
+                                  shift: person.trust_shift(op1, op2),
+                                  edgeType: EdgeType::Friend,
+                              }))
+            }
+            State::Media(ref m) => {
+                let op_idx = person.rand_opinion_idx(&mut rng, &m.opinions);
+                let ref op1 = person.opinions[op_idx];
+                let ref op2 = m.opinions[op_idx];
+
+                // naively bootstrap trust for new media as 0
+                let trust = match person.medias.get(&other.id) {
+                    Some(t) => *t,
+                    None => 0,
+                };
+
+                let p_opinion_shift = ((trust as f64) + 0.01) / 100.;
+                if rng.gen::<f64>() < p_opinion_shift {
+                    updates.queue(id, Update::Person(person.be_influenced(op_idx, op1, op2)));
+                }
+
+                updates.queue(id,
+                              Update::Person(PersonUpdate::TrustShift {
+                                  id: other.id,
+                                  shift: person.trust_shift(op1, op2),
+                                  edgeType: EdgeType::Media,
+                              }))
+            }
         }
     }
 }
@@ -239,41 +318,41 @@ fn main() {
 
     let mut medias = vec![Media {
                               opinions: vec![Opinion {
-                                                 polarity: -1.,
-                                                 priority: 0.5,
+                                                 polarity: -1,
+                                                 priority: 5,
                                              },
                                              Opinion {
-                                                 polarity: -0.5,
-                                                 priority: 1.,
+                                                 polarity: -5,
+                                                 priority: 1,
                                              }],
                           },
                           Media {
                               opinions: vec![Opinion {
-                                                 polarity: 1.,
-                                                 priority: 0.8,
+                                                 polarity: 1,
+                                                 priority: 8,
                                              },
                                              Opinion {
-                                                 polarity: -0.2,
-                                                 priority: 0.4,
+                                                 polarity: 2,
+                                                 priority: 4,
                                              }],
                           }];
     let media_ids = manager.spawns(medias.drain(..).map(|m| State::Media(m)).collect());
 
     let mut people = vec![Person::new(vec![Opinion {
-                                               polarity: 1.,
-                                               priority: 1.,
+                                               polarity: 1,
+                                               priority: 1,
                                            },
                                            Opinion {
-                                               polarity: 0.,
-                                               priority: 0.,
+                                               polarity: 0,
+                                               priority: 0,
                                            }]),
                           Person::new(vec![Opinion {
-                                               polarity: -1.,
-                                               priority: 1.,
+                                               polarity: -1,
+                                               priority: 1,
                                            },
                                            Opinion {
-                                               polarity: 1.,
-                                               priority: 0.,
+                                               polarity: 1,
+                                               priority: 0,
                                            }])];
     let people_ids = manager.spawns(people.drain(..).map(|m| State::Person(m)).collect());
 
