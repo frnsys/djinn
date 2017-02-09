@@ -135,7 +135,7 @@ enum PersonUpdate {
     TrustShift {
         id: u64,
         shift: i32,
-        edgeType: EdgeType,
+        edge_type: EdgeType,
     },
 }
 
@@ -214,7 +214,7 @@ impl OpinionDynamicsSim {
                               Update::Person(PersonUpdate::TrustShift {
                                   id: other.id,
                                   shift: person.trust_shift(op1, op2),
-                                  edgeType: EdgeType::Friend,
+                                  edge_type: EdgeType::Friend,
                               }))
             }
             State::Media(ref m) => {
@@ -237,10 +237,40 @@ impl OpinionDynamicsSim {
                               Update::Person(PersonUpdate::TrustShift {
                                   id: other.id,
                                   shift: person.trust_shift(op1, op2),
-                                  edgeType: EdgeType::Media,
+                                  edge_type: EdgeType::Media,
                               }))
             }
         }
+    }
+
+    fn update_person(&self, mut person: &mut Person, updates: Vec<Update>) -> bool {
+        let mut updated = false;
+        for update in updates {
+            match update {
+                Update::Person(u) => {
+                    match u {
+                        PersonUpdate::OpinionShift { idx, polarity } => {
+                            let ref mut op = person.opinions[idx];
+                            op.polarity += polarity;
+                        }
+                        PersonUpdate::TrustShift { id, shift, edge_type } => {
+                            match edge_type {
+                                EdgeType::Friend => {
+                                    let trust = *person.friends.entry(id).or_insert(0) as i32;
+                                    person.friends.insert(id, (trust + shift) as u32);
+                                }
+                                EdgeType::Media => {
+                                    let trust = *person.medias.entry(id).or_insert(0) as i32;
+                                    person.medias.insert(id, (trust + shift) as u32);
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => (),
+            }
+        }
+        updated
     }
 }
 
