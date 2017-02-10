@@ -151,9 +151,7 @@ enum Update {
 }
 
 #[derive(RustcDecodable, RustcEncodable, Debug, PartialEq, Clone)]
-struct World {
-    weather: String,
-}
+struct World {}
 
 #[derive(Clone)]
 struct OpinionDynamicsSim;
@@ -182,7 +180,7 @@ impl OpinionDynamicsSim {
             // the less media this person is familiar with,
             // the more likely they will encounter a random one.
             // otherwise, they choose one with probability based on how much they trust it.
-            let p_rand_media = (person.medias.len() as f64) / 2.; // TODO denom should be a config val
+            let p_rand_media = 1. - ((person.medias.len() as f64) / 2.); // TODO denom should be a config val
             if rng.gen::<f64>() < p_rand_media {
                 pop.random("media")
             } else {
@@ -191,9 +189,9 @@ impl OpinionDynamicsSim {
             }
         } else {
             // choose a person to talk to.
-            let p_rand_person = (person.friends.len() as f64) / 2.; // TODO denom should be a config val
+            let p_rand_person = 1. - ((person.friends.len() as f64) / 2.); // TODO denom should be a config val
             if rng.gen::<f64>() < p_rand_person {
-                pop.random("person") // TODO prob shouldnt be themselves
+                pop.random("people") // TODO prob shouldnt be themselves
             } else {
                 let id = person.rand_edge(&mut rng, &person.friends);
                 pop.get_agent(id).unwrap()
@@ -359,25 +357,9 @@ impl Simulation for OpinionDynamicsSim {
     }
 }
 
-// TODO
-// person step:
-//  - sample a person to talk to, based on trust. or encounter random.
-//  - read a story from media, based on opinion alignment and importance
-//  - talk to person
-//  - change opinion based on media
-//  - change opinion based on talking to person
-//
-
 fn main() {
-    // TODO
-    // - bootstrap social network
-    // - people more likely talk to likeminded friends
-    // - randomly meet new people
-
     let sim = OpinionDynamicsSim {};
-
-    // TODO
-    let world = World { weather: "sunny".to_string() };
+    let world = World {};
 
     // Setup the manager
     let addr = "redis://127.0.0.1/";
@@ -424,5 +406,6 @@ fn main() {
                                            }])];
     let people_ids = manager.spawns(people.drain(..).map(|m| State::Person(m)).collect());
 
-    // run(sim, world, manager, 4, 10);
+    println!("running");
+    run(sim, world, manager, 4, 10);
 }
