@@ -1,130 +1,81 @@
+//! # Basic simulation
+//! A really basic simulation to demonstrate
+//! some features of Djinn:
+//!
+//! - how to write a basic simulation
+//! - how to create a websocket server and publish to it
+//! - how to publish and listen to events
+//! - how to register a simulation reporter
+//! - how to run a simulation
+
 extern crate djinn;
 extern crate redis;
-extern crate redis_cluster;
 extern crate rustc_serialize;
 
 use std::thread;
 use redis::{Client, Commands};
-use redis_cluster::Cluster;
-use djinn::{Agent, Manager, Simulation, Population, Worker, Uuid, Redis, WebSocketServer};
+use djinn::{Agent, Manager, Simulation, Population, Updates, Redis, WebSocketServer, run};
+
+const HEALTH_START: usize = 10;
+const HEALTH_CHANGE: usize = 10;
 
 #[derive(RustcDecodable, RustcEncodable, Debug, PartialEq, Clone)]
-pub struct MyState {
-    name: String,
+pub struct State {
     health: usize,
 }
 
 #[derive(RustcDecodable, RustcEncodable, Debug, PartialEq, Clone)]
-pub struct MyWorld {
+pub struct World {
     weather: String,
 }
 
 #[derive(RustcDecodable, RustcEncodable, Debug, PartialEq, Clone)]
-pub enum MyUpdate {
-    ChangeName(String),
+pub enum Update {
     ChangeHealth(usize),
 }
 
 #[derive(Clone)]
-pub struct MySimulation;
+pub struct BasicSim;
 
-impl Simulation for MySimulation {
-    type State = MyState;
-    type Update = MyUpdate;
-    type World = MyWorld;
-
-    fn on_spawn<R: Redis>(&self,
-                          agent: Agent<Self::State>,
-                          population: &Population<Self, R>)
-                          -> () {
-        population.index(agent.state.name.as_ref(), agent.id.clone());
-    }
-
-    fn on_death<R: Redis>(&self,
-                          agent: Agent<Self::State>,
-                          population: &Population<Self, R>)
-                          -> () {
-        population.unindex(agent.state.name.as_ref(), agent.id.clone());
-    }
+impl Simulation for BasicSim {
+    type State = State;
+    type Update = Update;
+    type World = World;
 
     fn decide<R: Redis>(&self,
-                        agent: Agent<Self::State>,
-                        world: Self::World,
-                        population: &Population<Self, R>)
-                        -> Vec<(Uuid, Self::Update)> {
-        let mut updates = Vec::new();
-        match agent.state.name.as_ref() {
-            "hello" => {
-                let agents = population.lookup("goodbye");
-                for a in agents {
-                    updates.push((a.id, MyUpdate::ChangeHealth(12)));
-                }
-            }
-            "goodbye" => (),
-            _ => println!("my name is unknown"),
-        }
-        updates
+                        agent: &Agent<Self::State>,
+                        world: &Self::World,
+                        population: &Population<Self, R>,
+                        updates: &mut Updates<Self>)
+                        -> () {
+        updates.queue(agent.id, Update::ChangeHealth(HEALTH_CHANGE));
     }
 
-    fn update(&self, state: Self::State, updates: Vec<Self::Update>) -> Self::State {
-        let mut state = state.clone();
+    fn update(&self, mut state: &mut Self::State, updates: Vec<Self::Update>) -> bool {
+        let updated = updates.len() > 0;
         for update in updates {
-            state = match update {
-                MyUpdate::ChangeName(name) => {
-                    MyState {
-                        name: name,
-                        health: state.health,
-                    }
-                }
-                MyUpdate::ChangeHealth(health) => {
-                    MyState {
-                        name: state.name,
-                        health: state.health + health,
-                    }
+            match update {
+                Update::ChangeHealth(health) => {
+                    state.health += health;
                 }
             }
         }
-        state
+        updated
     }
 }
 
 fn main() {
-    let health = 10;
-    let state = MyState {
-        name: "hello".to_string(),
-        health: 0,
-    };
-    let state2 = MyState {
-        name: "goodbye".to_string(),
-        health: health,
-    };
-
-    let sim = MySimulation {};
-    let world = MyWorld { weather: "sunny".to_string() };
+    let sim = BasicSim {};
+    let world = World { weather: "sunny".to_string() };
 
     // Setup the manager
     let addr = "redis://127.0.0.1/";
-
-    let startup_nodes =
-        vec!["redis://127.0.0.1:7000", "redis://127.0.0.1:7001", "redis://127.0.0.1:7002"];
-    // let pop_client = Cluster::new(startup_nodes.clone());
-    let pop_client = Client::open(addr).unwrap();
-    let mut manager = Manager::new(addr, pop_client, sim, world);
+    let client = Client::open(addr).unwrap();
+    let mut manager = Manager::new(addr, client, sim.clone());
 
     // Spawn the population
-    manager.population.spawn(state.clone());
-    let id = manager.population.spawn(state2.clone());
-    manager.population.update();
-    assert_eq!(manager.population.count(), 2);
-
-    // Create a worker on a separate thread
-    let worker_t = thread::spawn(move || {
-        let sim = MySimulation {};
-        let pop_client = Client::open(addr).unwrap();
-        // let pop_client = Cluster::new(startup_nodes.clone());
-        let worker = Worker::new(addr, pop_client, sim);
-        worker.start();
-    });
+    manager.spawn(State { health: 0 });
+    let id = manager.spawn(State { health: HEALTH_START });
 
     // Create a websocket server to pass messages to frontend clients
     let mut ws = WebSocketServer::new("127.0.0.1:3012", addr);
@@ -135,15 +86,15 @@ fn main() {
 
     let n_steps = 10;
 
-    // Create a client to listen to our reports
+    // Create a client to listen to events
     let log_t = thread::spawn(move || {
         let client = Client::open(addr).unwrap();
         let mut pubsub = client.get_pubsub().unwrap();
         pubsub.subscribe("weather").unwrap();
-        for _ in 0..n_steps {
+        for step in 0..n_steps {
             let msg = pubsub.get_message().unwrap();
             let payload: String = msg.get_payload().unwrap();
-            println!("This step's weather is {}", payload);
+            println!("[{:02}] This step's weather is {}", step, payload);
         }
     });
 
@@ -154,14 +105,7 @@ fn main() {
         let _: () = conn.publish("ws", world.weather.clone()).unwrap();
     });
 
-    // Run the manager on a separate thread
-    let manager_t = thread::spawn(move || {
-        manager.run(n_steps);
-        manager
-    });
-
-    manager = manager_t.join().unwrap();
-    worker_t.join().unwrap();
+    manager = run(sim, world, manager, 4, n_steps);
     log_t.join().unwrap();
 
     // Check that things are working
@@ -170,7 +114,7 @@ fn main() {
         None => panic!("Couldn't find the agent"),
     };
     println!("{:?}", agent);
-    assert_eq!(agent.state.health, health + (12 * n_steps));
+    assert_eq!(agent.state.health, HEALTH_START + (HEALTH_CHANGE * n_steps));
 
     // Shutdown the websocket server
     ws.shutdown();
