@@ -2,16 +2,35 @@ extern crate rand;
 extern crate djinn;
 extern crate redis;
 extern crate rustc_serialize;
+extern crate yaml_rust;
 
 mod opdyn;
 
 use redis::Client;
+use yaml_rust::{YamlLoader, Yaml};
 use djinn::{Manager, Agent, run};
 use opdyn::{OpinionDynamicsSim, State, World, Person, Media, Opinion};
 
+use std::path::Path;
+use std::fs::File;
+use std::io::Read;
+
+fn load_from_yaml(fname: &str) -> Yaml {
+    let path = Path::new("opdyn.yaml");
+    let mut file = File::open(&path).unwrap();
+    let mut s = String::new();
+    file.read_to_string(&mut s).unwrap();
+
+    // just return the first yaml doc
+    let mut docs = YamlLoader::load_from_str(&s).unwrap();
+    docs.remove(0)
+}
+
 fn main() {
+    let conf = load_from_yaml("opdyn.yaml");
+
     let sim = OpinionDynamicsSim {
-        opinion_shift_proportion: 0.1
+        opinion_shift_proportion: conf["opinion_shift_proportion"].as_f64().unwrap(),
     };
     let world = World {};
 
