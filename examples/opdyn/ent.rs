@@ -3,8 +3,6 @@ use std::collections::HashMap;
 use rand::distributions::{Weighted, WeightedChoice, IndependentSample};
 use super::sim::PersonUpdate;
 
-const OPINION_SHIFT_PROPORTION: f64 = 0.1;
-
 // when two people share the exact same polarity on an opinion,
 // this is how much their trust improves by
 const MAX_POS_TRUST_SHIFT: f64 = 1.;
@@ -85,9 +83,14 @@ impl Person {
     /// causes one to double-down on their own opinion.
     /// TODO atm this is only a one-way exchange, totally possible to influence the
     /// other person's opinion too.
-    pub fn be_influenced(&self, op_idx: usize, op1: &Opinion, op2: &Opinion) -> PersonUpdate {
+    pub fn be_influenced(&self,
+                         op_idx: usize,
+                         op1: &Opinion,
+                         op2: &Opinion,
+                         op_shift_proportion: f64)
+                         -> PersonUpdate {
         let diff = op2.polarity - op1.polarity;
-        let shift = ((diff as f64) * OPINION_SHIFT_PROPORTION).round() as i32;
+        let shift = ((diff as f64) * op_shift_proportion).round() as i32;
         PersonUpdate::OpinionShift {
             idx: op_idx,
             polarity: shift,

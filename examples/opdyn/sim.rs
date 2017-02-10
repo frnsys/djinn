@@ -3,10 +3,6 @@ use rand::Rng;
 use super::ent::{Person, Media};
 use djinn::{Agent, Simulation, Population, Updates, Redis};
 
-// when an opinion shifts, it shifts by this proportion of
-// the opinion difference
-const OPINION_SHIFT_PROPORTION: f64 = 0.1;
-
 #[derive(RustcDecodable, RustcEncodable, Debug, PartialEq, Clone)]
 pub struct World {}
 
@@ -44,7 +40,11 @@ pub enum Update {
 }
 
 #[derive(Clone)]
-pub struct OpinionDynamicsSim;
+pub struct OpinionDynamicsSim {
+    // when an opinion shifts, it shifts by this proportion of
+    // the opinion difference
+    pub opinion_shift_proportion: f64,
+}
 
 impl OpinionDynamicsSim {
     fn decide_media<R: Redis>(&self,
@@ -100,7 +100,11 @@ impl OpinionDynamicsSim {
                 };
                 let p_opinion_shift = ((trust as f64) + 0.01) / 100.;
                 if rng.gen::<f64>() < p_opinion_shift {
-                    updates.queue(id, Update::Person(person.be_influenced(op_idx, op1, op2)));
+                    updates.queue(id,
+                                  Update::Person(person.be_influenced(op_idx,
+                                                     op1,
+                                                     op2,
+                                                     self.opinion_shift_proportion)));
                 }
 
                 updates.queue(id,
@@ -130,7 +134,11 @@ impl OpinionDynamicsSim {
 
                 let p_opinion_shift = ((trust as f64) + 0.01) / 100.;
                 if rng.gen::<f64>() < p_opinion_shift {
-                    updates.queue(id, Update::Person(person.be_influenced(op_idx, op1, op2)));
+                    updates.queue(id,
+                                  Update::Person(person.be_influenced(op_idx,
+                                                     op1,
+                                                     op2,
+                                                     self.opinion_shift_proportion)));
                 }
 
                 updates.queue(id,
@@ -184,7 +192,7 @@ impl OpinionDynamicsSim {
                         MediaUpdate::Click { idx, polarity } => {
                             let ref mut op = media.opinions[idx];
                             let diff = polarity - op.polarity;
-                            op.polarity += ((polarity as f64) * OPINION_SHIFT_PROPORTION)
+                            op.polarity += ((polarity as f64) * self.opinion_shift_proportion)
                                 .round() as i32;
                             op.priority += 1;
                             updated = true;

@@ -10,7 +10,9 @@ use djinn::{Manager, Agent, run};
 use opdyn::{OpinionDynamicsSim, State, World, Person, Media, Opinion};
 
 fn main() {
-    let sim = OpinionDynamicsSim {};
+    let sim = OpinionDynamicsSim {
+        opinion_shift_proportion: 0.1
+    };
     let world = World {};
 
     // Setup the manager
