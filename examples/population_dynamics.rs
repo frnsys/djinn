@@ -1,4 +1,4 @@
-//! Population Dynamics model
+//! # Population Dynamics model
 //! Refer to: <https://www.openabm.org/book/33102/6-population-dynamics>
 //!
 //! Demonstrates:
@@ -23,8 +23,8 @@ extern crate redis;
 extern crate redis_cluster;
 extern crate rustc_serialize;
 
-use rand::Rng;
 use std::cmp;
+use rand::Rng;
 use redis::Client;
 use std::collections::{HashMap, HashSet};
 use djinn::{Agent, Manager, Simulation, Population, Redis, Updates, run};
@@ -247,12 +247,6 @@ impl Simulation for Sim {
 
 fn main() {
     let sim = Sim {
-        // FOR TESTING
-        // p_replenishment: 1.,
-        // birth_threshold: 0,
-        // resource_per_cell: 1,
-        // resource_to_live: 0,
-        // start_resources: 1,
         p_replenishment: 0.8,
         birth_threshold: 10,
         resource_per_cell: 6,
