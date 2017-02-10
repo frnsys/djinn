@@ -12,7 +12,7 @@ use opdyn::{OpinionDynamicsSim, State, World, Person, Media, Opinion};
 
 
 fn main() {
-    let conf = load_from_yaml("opdyn.yaml");
+    let conf = load_from_yaml("examples/conf/opdyn.yaml");
     let sim = OpinionDynamicsSim {
         opinion_shift_proportion: conf["opinion_shift_proportion"].as_f64().unwrap(),
     };
