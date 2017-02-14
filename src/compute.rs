@@ -4,7 +4,6 @@ use redis::{Commands, Client, Connection, PubSub};
 use hash::{WHasher, hash};
 use ser::{decode, encode};
 use sim::{Agent, Simulation, State};
-use time::PreciseTime;
 use fnv::FnvHashMap;
 
 /// An interface to a Redis instance or cluster.
@@ -440,8 +439,6 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
 
         let mut queued_updates = Updates::new(hasher.clone());
         while steps < n_steps {
-            let start = PreciseTime::now();
-
             population.update();
             let _: () = self.conn.publish("command", "sync").unwrap();
             self.wait_until_finished();
@@ -484,9 +481,6 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
             }
 
             steps += 1;
-
-            let end = PreciseTime::now();
-            println!("MANAGER: STEP TOOK: {}", start.to(end));
         }
 
         println!("done. terminating workers");

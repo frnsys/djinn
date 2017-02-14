@@ -18,8 +18,6 @@ extern crate yaml_rust;
 extern crate rmp_serialize;
 extern crate rustc_serialize;
 
-extern crate time;
-
 mod sim;
 mod ser;
 mod hash;
