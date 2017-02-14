@@ -2,6 +2,7 @@ use std::thread;
 use ws::WebSocket;
 use redis::{Client, Commands};
 
+/// A WebSocket server which receives and publishes events.
 pub struct WebSocketServer {
     addr: String,
     redis_addr: String,
@@ -18,7 +19,7 @@ impl WebSocketServer {
     }
 
     /// Runs a WebSocket server that subscribes to a Redis pubsub channel.
-    /// Workers can send publish messages to the channel and this server will forward them to
+    /// Workers can publish messages to the channel and this server will forward them to
     /// connected WebSocket clients.
     pub fn start(&mut self) {
         let addr = self.addr.clone();

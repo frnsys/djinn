@@ -1,15 +1,22 @@
+//! Implementation of Q-Learning for reinforcement learning agents.
+//!
+//! For an example see `examples/qlearning.rs`.
+
 use rand;
 use rand::{Rng, ThreadRng};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::collections::HashMap;
 
+/// The state a Q-learning agent learns from and responds to.
 pub trait State: Send + Sync + Clone + PartialEq + Hash + Eq + Debug {}
 impl<T> State for T where T: Send + Sync + Clone + PartialEq + Hash + Eq + Debug {}
 
+/// The actions that a Q-learning agent can take.
 pub trait Action: Send + Sync + Clone + PartialEq + Hash + Eq + Debug {}
 impl<T> Action for T where T: Send + Sync + Clone + PartialEq + Hash + Eq + Debug {}
 
+/// Contains the parameters for a Q-learning agent.
 pub struct QLearnerParams<S: State, A: Action> {
     discount: f64,
     explore: f64,
@@ -32,6 +39,7 @@ impl<S: State, A: Action> QLearnerParams<S, A> {
     }
 }
 
+/// Trait for a Q-learning agent.
 pub trait QLearner {
     type State: State;
     type Action: Action;
