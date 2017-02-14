@@ -1,6 +1,6 @@
 # djinn
 
-![documentation](https://docs.rs/djinn/badge.svg)
+[![documentation](https://docs.rs/djinn/badge.svg)](https://docs.rs/djinn/)
 
 [![Join the chat at https://gitter.im/MaxwellRebo/djinn](https://badges.gitter.im/MaxwellRebo/djinn.svg)](https://gitter.im/MaxwellRebo/djinn?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
 
