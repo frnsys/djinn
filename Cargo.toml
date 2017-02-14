@@ -2,20 +2,22 @@
 name = "djinn"
 version = "0.0.1"
 authors = ["Francis Tseng <f@frnsys.com>"]
+description = "A framework for distributed agent-based modeling"
+repository = "https://github.com/MachineColony/djinn"
+license = "MIT"
 
 [dependencies]
-rustc-serialize = "*"
-rmp = "*"
-rmp-serialize = "*"
+rustc-serialize = "0.3"
+rmp = "0.8"
+rmp-serialize = "0.8"
 redis = "0.8.0"
-ws = "*"
+ws = "0.5"
 uuid = { version = "0.2", features = ["v4", "rustc-serialize"] }
-cpython = { git = "https://github.com/dgrunwald/rust-cpython.git" }
-fnv = "*"
-rand = "*"
-yaml-rust = "*"
-time = "*"
+cpython = "0.1"
+fnv = "1.0"
+rand = "0.3"
+yaml-rust = "0.3"
 
 [dev-dependencies]
-time = "*"
-redis-cluster = { git = "https://github.com/frnsys/redis-cluster.rs.git" }
+time = "0.1"
+redis-cluster = "0.1"

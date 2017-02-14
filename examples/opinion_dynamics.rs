@@ -7,7 +7,7 @@ mod opdyn;
 
 use redis::Client;
 use djinn::{Manager, Agent, run};
-use djinn::yaml::load_from_yaml;
+use djinn::ext::yaml::load_from_yaml;
 use opdyn::{OpinionDynamicsSim, State, World, Person, Media, Opinion};
 
 

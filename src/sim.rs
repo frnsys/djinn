@@ -2,15 +2,17 @@ use std::fmt::Debug;
 use compute::{Population, Redis, Updates};
 use rustc_serialize::{Decodable, Encodable};
 
+/// The state that represents an `Agent`.
 pub trait State: Decodable + Encodable + Debug + Send + Sync + Clone + PartialEq {}
 impl<T> State for T where T: Decodable + Encodable + Debug + Send + Sync + Clone + PartialEq {}
 
+/// An message that agents can queue for themselves or for others.
 pub trait Update
     : Decodable + Encodable + Debug + Send + Sync + Clone + PartialEq {
 }
 impl<T> Update for T where T: Decodable + Encodable + Debug + Send + Sync + Clone + PartialEq {}
 
-/// Agents are just structures containing a unique id and a state.
+/// Struct containing a unique id and a state.
 #[derive(RustcDecodable, RustcEncodable, Debug, PartialEq, Clone)]
 pub struct Agent<S: State> {
     pub id: u64,
@@ -18,7 +20,9 @@ pub struct Agent<S: State> {
 }
 
 /// This trait's implementation defines the main logic of a simulation.
+///
 /// A single simulation step consists of two synchronized phases:
+///
 /// 1. `decide`: this is a _read-only_ phase where agents decide on what _updates_ to apply. The
 ///    updates themselves are _not_ applied in this phase.
 /// 2. `update`: this is a phase where agents consider queued updates and compute a new state
@@ -53,7 +57,8 @@ pub trait Simulation: Sized + Send + Sync + Clone {
                         -> ();
 
     /// Compute a final updated state given a starting state and updates.
-    /// If there is some update you want to do every step, things will run faster if you implement it here.
+    ///
+    /// If there is some update you want to do every step, things will run faster if you implement it here directly rather than using an `Update`.
     fn update(&self, state: &mut Self::State, updates: Vec<Self::Update>) -> bool;
 
     /// Compute updates for the world.

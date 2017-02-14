@@ -4,9 +4,9 @@ use redis::{Commands, Client, Connection, PubSub};
 use hash::{WHasher, hash};
 use ser::{decode, encode};
 use sim::{Agent, Simulation, State};
-use time::PreciseTime;
 use fnv::FnvHashMap;
 
+/// An interface to a Redis instance or cluster.
 pub trait Redis: Commands + Send + Sync + Clone {}
 impl<T> Redis for T where T: Commands + Send + Sync + Clone {}
 
@@ -14,6 +14,10 @@ const POPULATION_KEY: &'static str = "population";
 const POP_UPDATES_KEY: &'static str = "updates:population";
 const WORLD_UPDATES_KEY: &'static str = "updates:world";
 
+/// A container for queuing and synchronizing agent updates.
+///
+/// Updates for agents local to the worker will be directly routed to those agents.
+/// Updates for remote agents will be synchronized via Redis.
 pub struct Updates<S: Simulation> {
     updates: FnvHashMap<usize, Vec<(u64, S::Update)>>,
     world_updates: Vec<S::Update>,
@@ -31,16 +35,19 @@ impl<S: Simulation> Updates<S> {
         }
     }
 
+    /// Queue a single update for an agent with the specified id.
     pub fn queue(&mut self, id: u64, update: S::Update) {
         let worker_id = self.hasher.hash(id);
         self.updates.entry(worker_id).or_insert_with(Vec::new).push((id, update));
     }
 
+    /// Queue an update for the world.
     pub fn queue_world(&mut self, update: S::Update) {
         self.world_updates.push(update);
     }
 
     /// Create a new agent with the specified state, returning the new agent's id.
+    ///
     /// This does not actually spawn the agent, it just queues it.
     /// Run the `update` method to execute it (and other queued updates).
     pub fn spawn(&mut self, state: S::State) -> u64 {
@@ -51,6 +58,7 @@ impl<S: Simulation> Updates<S> {
     }
 
     /// Deletes an agent by id.
+    ///
     /// This does not actually execute the kill, it just queues it.
     /// Run the `update` method to execute it (and other queued updates).
     pub fn kill(&mut self, agent: &Agent<S::State>) {
@@ -111,20 +119,22 @@ impl<S: Simulation, C: Redis> Population<S, C> {
         }
     }
 
+    /// Count the population size.
     pub fn count(&self) -> usize {
         self.conn.scard::<&str, usize>(POPULATION_KEY).unwrap()
     }
 
+    /// Get the world (state).
     pub fn world(&self) -> S::World {
         let data = self.conn.get("world").unwrap();
         decode(data).unwrap()
     }
 
+    /// Set the world state.
     pub fn set_world(&self, world: S::World) {
         let data = encode(&world).unwrap();
         let _: () = self.conn.set("world", data).unwrap();
     }
-
 
     /// Get an agent by id.
     pub fn get_agent(&self, id: u64) -> Option<Agent<S::State>> {
@@ -243,7 +253,7 @@ impl<S: Simulation, C: Redis> Population<S, C> {
         }
     }
 
-    /// Process queued updates.
+    /// Process queued updates (kill/spawn).
     pub fn update(&self) {
         let mut to_kill = Vec::new();
         let mut to_spawn = Vec::new();
@@ -313,6 +323,7 @@ impl<S: Simulation, C: Redis> Population<S, C> {
         self.get_agents(ids)
     }
 
+    /// Count the members of an index.
     pub fn count_index(&self, index: &str) -> usize {
         self.conn.scard(format!("idx:{}", index)).unwrap()
     }
@@ -341,7 +352,7 @@ impl<S: Simulation, C: Redis> Population<S, C> {
         }
     }
 
-    /// Reset indices.
+    /// Reset all indices.
     pub fn reset_indices(&self) {
         let keys: Vec<String> = self.conn.keys("idx:*").unwrap();
         if !keys.is_empty() {
@@ -349,7 +360,8 @@ impl<S: Simulation, C: Redis> Population<S, C> {
         }
     }
 
-    /// Reset the population.
+    /// Reset the population; i.e. deletes all agents and
+    /// updates from Redis and resets all indices.
     pub fn reset(&self) {
         // reset sets
         let _: () = self.conn.del(POPULATION_KEY).unwrap();
@@ -358,6 +370,7 @@ impl<S: Simulation, C: Redis> Population<S, C> {
     }
 }
 
+/// Manages a simulation and coordinates a set of workers.
 pub struct Manager<S: Simulation, C: Redis> {
     addr: String,
     conn: Connection,
@@ -393,6 +406,8 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
     }
 
     /// Run the simulation for `n_steps`.
+    /// This will spawn the population across available workers
+    /// and begin sending them synchronized commands to step through the simulation.
     pub fn run(&self, simulation: S, world: S::World, n_steps: usize) -> () {
         let mut steps = 0;
         let mut n_workers = 0;
@@ -424,8 +439,6 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
 
         let mut queued_updates = Updates::new(hasher.clone());
         while steps < n_steps {
-            let start = PreciseTime::now();
-
             population.update();
             let _: () = self.conn.publish("command", "sync").unwrap();
             self.wait_until_finished();
@@ -468,9 +481,6 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
             }
 
             steps += 1;
-
-            let end = PreciseTime::now();
-            println!("MANAGER: STEP TOOK: {}", start.to(end));
         }
 
         println!("done. terminating workers");
@@ -478,6 +488,7 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
     }
 
     /// Register a reporter function to be called every `n_steps`.
+    ///
     /// It receives a `Population` which can be used to query agents,
     /// compute aggregate statistics, etc, and a Redis connection
     /// that can be used, for example, to send reports via pubsub.
@@ -492,6 +503,7 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
         }
     }
 
+    /// Spawn an agent.
     pub fn spawn(&mut self, state: S::State) -> u64 {
         let id = hash(&Uuid::new_v4().to_string());
         let update = PopulationUpdate::Spawn(id, state);
@@ -500,7 +512,7 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
         id
     }
 
-    /// Spawn multiple agents at once.
+    /// Spawn multiple agents.
     pub fn spawns(&mut self, mut states: Vec<S::State>) -> Vec<u64> {
         states.drain(..).map(|s| self.spawn(s)).collect()
     }
@@ -511,6 +523,7 @@ impl<S: Simulation, C: Redis> Manager<S, C> {
     }
 }
 
+/// A process that computes and applies updates for a local population of agents.
 pub struct Worker<S: Simulation, C: Redis> {
     id: usize,
     uid: Uuid,
@@ -540,6 +553,7 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
         }
     }
 
+    /// Start running the worker. This blocks until the worker receives a `terminate` command.
     pub fn start(&mut self) {
         // register with the manager
         let _: () = self.manager.sadd("workers", self.uid.to_string()).unwrap();
@@ -679,7 +693,7 @@ impl<S: Simulation, C: Redis> Worker<S, C> {
     }
 }
 
-/// Convenience function for running a simulation/manager with a n workers.
+/// Convenience function for running a simulation/manager with `n` local workers.
 /// This blocks until the simulation is finished running.
 pub fn run<S: Simulation + 'static, R: Redis + 'static>(sim: S,
                                                         world: S::World,
