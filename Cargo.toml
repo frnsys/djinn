@@ -10,7 +10,7 @@ rmp-serialize = "*"
 redis = "0.8.0"
 ws = "*"
 uuid = { version = "0.2", features = ["v4", "rustc-serialize"] }
-cpython = { git = "https://github.com/dgrunwald/rust-cpython.git" }
+cpython = "0.1"
 fnv = "*"
 rand = "*"
 yaml-rust = "*"
