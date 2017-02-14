@@ -2,6 +2,9 @@
 name = "djinn"
 version = "0.0.1"
 authors = ["Francis Tseng <f@frnsys.com>"]
+description = "A framework for distributed agent-based modeling"
+repository = "https://github.com/MachineColony/djinn"
+license = "MIT"
 
 [dependencies]
 rustc-serialize = "*"
