@@ -18,4 +18,4 @@ time = "*"
 
 [dev-dependencies]
 time = "*"
-redis-cluster = { git = "https://github.com/frnsys/redis-cluster.rs.git" }
+redis-cluster = "0.1"
