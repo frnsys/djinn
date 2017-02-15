@@ -52,7 +52,7 @@ impl Simulation for BasicSim {
     }
 
     fn update(&self, mut state: &mut Self::State, updates: Vec<Self::Update>) -> bool {
-        let updated = updates.len() > 0;
+        let old_health = state.health;
         for update in updates {
             match update {
                 Update::ChangeHealth(health) => {
@@ -60,7 +60,7 @@ impl Simulation for BasicSim {
                 }
             }
         }
-        updated
+        state.health != old_health
     }
 }
 
