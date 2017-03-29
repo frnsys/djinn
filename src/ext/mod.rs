@@ -2,3 +2,4 @@
 
 pub mod qlearning;
 pub mod yaml;
+pub mod bnet;
