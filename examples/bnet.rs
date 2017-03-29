@@ -2,7 +2,7 @@ extern crate rand;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::collections::HashMap;
-use rand::distributions::{IndependentSample, Range};
+use rand::distributions::{IndependentSample, Range, Weighted, WeightedChoice};
 
 #[derive(Debug)]
 enum Occupation {
@@ -11,7 +11,7 @@ enum Occupation {
     Programmer,
 }
 
-#[derive(Debug, Eq, PartialEq, Hash)]
+#[derive(Debug, Eq, PartialEq, Hash, Clone)]
 enum Vars {
     Age,
     Income,
@@ -23,14 +23,6 @@ struct Datum {
     income: usize,
     occupation: Occupation,
 }
-
-// fn group(var) -> usize {
-// }
-
-// USER SPECIFIED:
-// used needs to convert their dataset into "rows"
-// see below
-// fn to_row(d: Datum) -> HashMap::<str, Var>::new()
 
 struct Dataset<T: Eq + PartialEq + Hash + Debug> {
     // map var to col index
@@ -59,17 +51,19 @@ enum Var {
     Float(f64),
 }
 
-struct BNet<T: Eq + PartialEq + Hash + Debug> {
+struct BNet<T: Eq + PartialEq + Hash + Debug + Clone> {
     graph: HashMap<T, Vec<T>>,
     dataset: Dataset<T>,
     groupers: HashMap<T, Box<Fn(&Var) -> usize>>,
+    samplers: HashMap<T, Box<Fn(usize) -> Var>>,
 }
 
-impl<T: Eq + PartialEq + Hash + Debug> BNet<T> {
+impl<T: Eq + PartialEq + Hash + Debug + Clone> BNet<T> {
     pub fn new(dataset: Dataset<T>) -> BNet<T> {
         BNet {
             graph: HashMap::new(),
             groupers: HashMap::new(),
+            samplers: HashMap::new(),
             dataset: dataset,
         }
     }
@@ -80,15 +74,21 @@ impl<T: Eq + PartialEq + Hash + Debug> BNet<T> {
         self.groupers.insert(n, Box::new(func));
     }
 
+    pub fn register_sampler<F>(&mut self, n: T, func: F) -> ()
+        where F: Fn(usize) -> Var + 'static
+    {
+        self.samplers.insert(n, Box::new(func));
+    }
+
     pub fn add_edge(&mut self, from: T, to: T) {
         self.graph.entry(from).or_insert_with(Vec::new).push(to);
     }
 
     // Get parents for a node.
-    fn parents(&self, n: T) -> Vec<&T> {
+    fn parents(&self, n: &T) -> Vec<&T> {
         self.graph
             .iter()
-            .filter_map(|(k, v)| { if v.contains(&n) { Some(k) } else { None } })
+            .filter_map(|(k, v)| { if v.contains(n) { Some(k) } else { None } })
             .collect()
     }
 
@@ -133,21 +133,23 @@ impl<T: Eq + PartialEq + Hash + Debug> BNet<T> {
                 let _: Vec<()> = given.iter()
                     .map(|(given_k, given_v)| {
                         // get the rows where the var `given_k` equals the val `given_v`
-                        // use a grouper, if one is specified
-                        let rows_for_given = if self.groupers.contains_key(given_k) {
-                            let group_id = self.groupers.get(given_k).unwrap()(given_v);
-                            let subgroups = self.group_by(given_k, group);
-                            match subgroups.get(&group_id) {
-                                Some(rows) => rows.len() as f64,
-                                None => 0.0,
+                        let rows_for_given = match self.groupers.get(given_k) {
+                            // use a grouper, if one is specified
+                            Some(grouper) => {
+                                let group_id = grouper(given_v);
+                                let subgroups = self.group_by(given_k, group);
+                                match subgroups.get(&group_id) {
+                                    Some(rows) => rows.len() as f64,
+                                    None => 0.0,
+                                }
                             }
 
                             // otherwise just get filter rows for exact matches
-                        } else {
-                            let col_ = *self.dataset.cols.get(given_k).unwrap();
-                            group.iter().filter(|r| r[col_] == *given_v).count() as f64
+                            None => {
+                                let col_ = *self.dataset.cols.get(given_k).unwrap();
+                                group.iter().filter(|r| r[col_] == *given_v).count() as f64
+                            }
                         };
-
                         likelihood *= rows_for_given / group_size;
                     })
                     .collect();
@@ -164,14 +166,60 @@ impl<T: Eq + PartialEq + Hash + Debug> BNet<T> {
 
         probs
     }
+
+    // b/c of rust's strictness with floats,
+    // we have to convert probs to integers...
+    // we lose fidelity as a result.
+    fn probs_to_weights(&self, probs: HashMap<usize, f64>) -> Vec<Weighted<usize>> {
+        probs.iter()
+            .map(|(k, p)| {
+                Weighted {
+                    item: *k,
+                    weight: (p * 1000.) as u32,
+                }
+            })
+            .collect()
+    }
+
+    pub fn sample_node(&self, n: &T, mut sampled: HashMap<T, Var>) -> HashMap<T, Var> {
+        let parents = self.parents(n);
+        let dist = if parents.is_empty() {
+            // if no parents, use p(n)
+            self.p_n(n)
+        } else {
+            // if parents, use prod(p(n|x_i) for x_i in parents)
+            // first, sample all parents
+            for p in parents.iter() {
+                if !sampled.contains_key(p) {
+                    sampled = self.sample_node(p, sampled);
+                }
+            }
+
+            // there must be a better way of doing this,
+            // but the compiler is being touchy
+            let mut s = sampled.clone();
+            let given: HashMap<T, Var> = s.drain()
+                .filter(|&(ref k, _)| parents.contains(&&k))
+                .collect();
+            self.probs_given(n, given)
+        };
+        let mut rng = rand::thread_rng();
+        let mut choices = self.probs_to_weights(dist);
+        let wc = WeightedChoice::new(&mut choices);
+        let choice = wc.ind_sample(&mut rng);
+
+        let val = match self.samplers.get(n) {
+            Some(sampler) => sampler(choice),
+            None => Var::Int(choice as i64),
+        };
+        sampled.insert(n.clone(), val);
+        sampled
+    }
 }
 
 fn main() {
-    // a row of is a column_name->variable hashmap
-    // let row = HashMap::<str, Var>::new();
-
     // generate a dataset
-    let n_samples = 1000;
+    let n_samples = 100000;
     let mut rng = rand::thread_rng();
     let ages = Range::new(1, 100);
     let low_income = Range::new(0, 20000);
@@ -206,6 +254,8 @@ fn main() {
         })
         .collect();
 
+    // user needs to specify how to transform their existing data
+    // into rows (i.e. each entry becomes a Vec<Var>)
     let dataset = Dataset::<Vars>::new(pop,
                                        |d| {
                                            vec![Var::Int(d.age as i64),
@@ -239,10 +289,23 @@ fn main() {
             _ => 4,
         }
     });
+    graph.register_sampler(Vars::Age, |i| {
+        let mut rng = rand::thread_rng();
+        let ages = if i <= 14 {
+            Range::new(1, 14)
+        } else if i <= 24 {
+            Range::new(15, 24)
+        } else if i <= 60 {
+            Range::new(25, 60)
+        } else {
+            Range::new(61, 100)
+        };
+        Var::Int(ages.ind_sample(&mut rng))
+    });
 
     let mut given = HashMap::new();
-    given.insert(Vars::Age, Var::Int(50)); // should be 100% chance of occupation 2
-    // given.insert(Vars::Age, Var::Int(20)); // should be 50/50 occupations 1 and 2
+    // given.insert(Vars::Age, Var::Int(50)); // should be 100% chance of occupation 2
+    given.insert(Vars::Age, Var::Int(20)); // should be 50/50 occupations 1 and 2
     let prior = graph.p_n(&Vars::Occupation);
     let posterior = graph.probs_given(&Vars::Occupation, given);
     println!("{:?}", prior);
